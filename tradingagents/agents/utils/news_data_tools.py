@@ -14,13 +14,13 @@ def get_news(
     (e.g. interactive Q&A, policy, long-form news, flash news, announcements, research reports).
 
     Official Tushare API docs (use ``fetch_url`` on tushare.pro to align field meanings per section):
-    npr — https://tushare.pro/document/2?doc_id=406 | https://tushare.pro/wctapi/documents/406.md
-    major_news — https://tushare.pro/document/2?doc_id=195 | https://tushare.pro/wctapi/documents/195.md
-    news — https://tushare.pro/document/2?doc_id=143 | https://tushare.pro/wctapi/documents/143.md
-    irm_qa_sh — https://tushare.pro/document/2?doc_id=366 | https://tushare.pro/wctapi/documents/366.md
-    irm_qa_sz — https://tushare.pro/document/2?doc_id=367 | https://tushare.pro/wctapi/documents/367.md
-    anns_d — https://tushare.pro/document/2?doc_id=176 | https://tushare.pro/wctapi/documents/176.md
-    research_report — https://tushare.pro/document/2?doc_id=415 | https://tushare.pro/wctapi/documents/415.md
+    npr — https://tushare.pro/wctapi/documents/406.md
+    major_news — https://tushare.pro/wctapi/documents/195.md
+    news — https://tushare.pro/wctapi/documents/143.md
+    irm_qa_sh — https://tushare.pro/wctapi/documents/366.md
+    irm_qa_sz —  https://tushare.pro/wctapi/documents/367.md
+    anns_d —  https://tushare.pro/wctapi/documents/176.md
+    research_report —  https://tushare.pro/wctapi/documents/415.md
 
     Args:
         ticker (str): Ticker symbol
@@ -42,10 +42,10 @@ def get_global_news(
     Uses the configured news_data vendor. Output may combine ``npr``, ``major_news``, ``news``, and ``research_report``.
 
     Official Tushare API docs (use ``fetch_url`` on tushare.pro to align field meanings):
-    npr — https://tushare.pro/document/2?doc_id=406 | https://tushare.pro/wctapi/documents/406.md
-    major_news — https://tushare.pro/document/2?doc_id=195 | https://tushare.pro/wctapi/documents/195.md
-    news — https://tushare.pro/document/2?doc_id=143 | https://tushare.pro/wctapi/documents/143.md
-    research_report — https://tushare.pro/document/2?doc_id=415 | https://tushare.pro/wctapi/documents/415.md
+    npr — https://tushare.pro/wctapi/documents/406.md
+    major_news — https://tushare.pro/wctapi/documents/195.md
+    news — https://tushare.pro/wctapi/documents/143.md
+    research_report — https://tushare.pro/wctapi/documents/415.md
     For per-stock announcements and full seven-section corpus, use ``get_news`` (see its docs for ``anns_d`` / ``irm_qa_*``).
 
     Args:
@@ -66,7 +66,6 @@ def get_insider_transactions(
     Uses the configured news_data vendor (Tushare ``stk_holdertrade``).
 
     Official Tushare API docs (use ``fetch_url`` on tushare.pro to align column meanings):
-    https://tushare.pro/document/2?doc_id=175
     https://tushare.pro/wctapi/documents/175.md
 
     Args:

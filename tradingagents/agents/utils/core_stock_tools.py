@@ -14,7 +14,6 @@ def get_stock_data(
     Uses the configured core_stock_apis vendor.
 
     Official Tushare API docs (A-share ``daily``; use ``fetch_url`` on tushare.pro to align column meanings):
-    https://tushare.pro/document/2?doc_id=27
     https://tushare.pro/wctapi/documents/27.md
 
     Args:

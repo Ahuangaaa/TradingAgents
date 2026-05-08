@@ -46,6 +46,50 @@ def _try_pro_call(fn_name: str, **kwargs):
         return None
 
 
+def _sse_trading_days_between_inclusive(lo_yyyy_mm_dd: str, hi_yyyy_mm_dd: str) -> list[str]:
+    """Return open trading dates in ``[lo, hi]`` (YYYY-MM-DD), ascending.
+
+    Uses Tushare ``trade_cal`` for ``SSE`` (same session calendar as SZSE/BJ
+    for routine A-share daily bars). See https://tushare.pro/document/2?doc_id=26
+    """
+    d0, d1 = to_yyyymmdd(lo_yyyy_mm_dd), to_yyyymmdd(hi_yyyy_mm_dd)
+    df = _try_pro_call(
+        "trade_cal",
+        exchange="SSE",
+        start_date=d0,
+        end_date=d1,
+        fields="cal_date,is_open",
+    )
+    if df is None or df.empty:
+        return []
+    open_mask = pd.to_numeric(df["is_open"], errors="coerce").fillna(0).astype(int) == 1
+    df = df.loc[open_mask]
+    if df.empty:
+        return []
+    cal = pd.to_datetime(df["cal_date"].astype(str), format="%Y%m%d", errors="coerce")
+    if cal.isna().all():
+        cal = pd.to_datetime(df["cal_date"].astype(str), errors="coerce")
+    dates = sorted(cal.dropna().dt.strftime("%Y-%m-%d").tolist())
+    return [d for d in dates if lo_yyyy_mm_dd <= d <= hi_yyyy_mm_dd]
+
+
+def _warmup_calendar_days_for_indicator(indicator: str) -> int:
+    """Extra calendar days to load before ``curr_date`` so stockstats has enough bars."""
+    # ~1.5–2× the dominant window, in calendar days (covers CNY gaps).
+    key = (indicator or "").lower()
+    if key == "close_200_sma":
+        return 420
+    if key == "close_50_sma":
+        return 130
+    if key in ("macd", "macds", "macdh"):
+        return 90
+    if key in ("boll", "boll_ub", "boll_lb"):
+        return 70
+    if key in ("rsi", "mfi", "vwma", "atr"):
+        return 50
+    return 90
+
+
 def _irm_qa_lines(ts_code: str, d0: str, d1: str, api_name: str, label: str) -> list[str]:
     df = _try_pro_call(api_name, ts_code=ts_code, start_date=d0, end_date=d1)
     if df is None or df.empty:
@@ -375,8 +419,18 @@ def get_tushare_stock_data(
     return header + csv_string
 
 
-def _tushare_load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
-    """OHLCV DataFrame compatible with stockstats (same shape as ``load_ohlcv`` from Yahoo path)."""
+def _tushare_load_ohlcv(
+    symbol: str,
+    curr_date: str,
+    *,
+    extend_start_calendar_days: int = 0,
+) -> pd.DataFrame:
+    """OHLCV DataFrame compatible with stockstats (same shape as ``load_ohlcv`` from Yahoo path).
+
+    ``extend_start_calendar_days`` pulls the download window further into the past
+    (from ``curr_date``) so moving averages / MACD have enough warm-up bars
+    inside the filtered frame.
+    """
     ts_code = resolve_tushare_equity(symbol)
     if not ts_code:
         raise TushareVendorError(
@@ -385,8 +439,11 @@ def _tushare_load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     safe_symbol = safe_ticker_component(symbol)
     config = get_config()
     curr_date_dt = pd.to_datetime(curr_date)
-    today_date = pd.Timestamp.today()
+    today_date = pd.Timestamp.today().normalize()
     start_date = today_date - pd.DateOffset(years=5)
+    if extend_start_calendar_days > 0:
+        extended = (curr_date_dt.normalize() - pd.Timedelta(days=extend_start_calendar_days))
+        start_date = min(start_date, extended)
     start_str = start_date.strftime("%Y-%m-%d")
     end_str = today_date.strftime("%Y-%m-%d")
 
@@ -422,7 +479,10 @@ def _tushare_load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
 
 
 def _tushare_stock_stats_bulk(symbol: str, indicator: str, curr_date: str) -> dict:
-    data = _tushare_load_ohlcv(symbol, curr_date)
+    warmup = _warmup_calendar_days_for_indicator(indicator)
+    data = _tushare_load_ohlcv(
+        symbol, curr_date, extend_start_calendar_days=warmup
+    )
     df = wrap(data)
     df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
     df[indicator]
@@ -465,19 +525,47 @@ def get_tushare_indicators(
 
     try:
         indicator_data = _tushare_stock_stats_bulk(symbol, indicator, curr_date)
+        before_str = before.strftime("%Y-%m-%d")
+        # ``trade_cal`` can mark a day as open before ``daily`` has that row (Tushare
+        # end-of-day lag, or ``curr_date`` beyond last quote). Cap at last OHLCV date.
+        if indicator_data:
+            last_bar = max(indicator_data.keys())
+            effective_end = min(end_date, last_bar)
+        else:
+            last_bar = None
+            effective_end = end_date
+
+        trading_days = _sse_trading_days_between_inclusive(before_str, effective_end)
+        if not trading_days:
+            trading_days = sorted(
+                d for d in indicator_data if before_str <= d <= effective_end
+            )
         ind_string = ""
-        current_dt = curr_date_dt
-        while current_dt >= before:
-            date_str = current_dt.strftime("%Y-%m-%d")
-            val = indicator_data.get(date_str, "N/A: Not a trading day (weekend or holiday)")
+        for date_str in reversed(trading_days):
+            val = indicator_data.get(date_str)
+            if val is None:
+                val = "N/A: No daily bar (suspended or missing quote)"
+            elif val == "N/A":
+                val = (
+                    "N/A: Indicator undefined (warm-up / new listing — "
+                    "not enough prior trading days for this formula)"
+                )
             ind_string += f"{date_str}: {val}\n"
-            current_dt = current_dt - relativedelta(days=1)
     except Exception as exc:
         raise TushareVendorError(f"Tushare indicators failed: {exc}") from exc
 
+    tail_note = ""
+    if last_bar is not None and last_bar < end_date:
+        tail_note = (
+            f"\n*(OHLCV last bar {last_bar}; ``trade_cal`` may list later dates as open "
+            f"before ``daily`` is published or when ``curr_date`` is after last quote.)*\n"
+        )
+
     return (
-        f"## {indicator} values from {before.strftime('%Y-%m-%d')} to {end_date} (Tushare OHLCV):\n\n"
+        f"## {indicator} values — SSE trading days from {before.strftime('%Y-%m-%d')} "
+        f"to {effective_end} (Tushare ``trade_cal`` + daily OHLCV):\n\n"
         + ind_string
+        + tail_note
         + "\n\n"
         + best_ind_params[indicator]
     )

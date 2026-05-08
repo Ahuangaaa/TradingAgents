@@ -15,7 +15,6 @@ def get_indicators(
 
     Underlying OHLCV comes from Tushare ``daily``; indicator names follow the ``stockstats`` library
     (not a separate Tushare table). Official ``daily`` field definitions:
-    https://tushare.pro/document/2?doc_id=27
     https://tushare.pro/wctapi/documents/27.md
     Use ``fetch_url`` on tushare.pro if you need to confirm raw column meanings before interpreting indicators.
 
