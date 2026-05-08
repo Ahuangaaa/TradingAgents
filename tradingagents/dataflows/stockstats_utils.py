@@ -1,35 +1,6 @@
-import time
-import logging
-
 import pandas as pd
-import yfinance as yf
-from yfinance.exceptions import YFRateLimitError
 from stockstats import wrap
 from typing import Annotated
-import os
-from .config import get_config
-from .utils import safe_ticker_component
-
-logger = logging.getLogger(__name__)
-
-
-def yf_retry(func, max_retries=3, base_delay=2.0):
-    """Execute a yfinance call with exponential backoff on rate limits.
-
-    yfinance raises YFRateLimitError on HTTP 429 responses but does not
-    retry them internally. This wrapper adds retry logic specifically
-    for rate limits. Other exceptions propagate immediately.
-    """
-    for attempt in range(max_retries + 1):
-        try:
-            return func()
-        except YFRateLimitError:
-            if attempt < max_retries:
-                delay = base_delay * (2 ** attempt)
-                logger.warning(f"Yahoo Finance rate limited, retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})")
-                time.sleep(delay)
-            else:
-                raise
 
 
 def _clean_dataframe(data: pd.DataFrame) -> pd.DataFrame:
@@ -46,59 +17,17 @@ def _clean_dataframe(data: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
-    """Fetch OHLCV data with caching, filtered to prevent look-ahead bias.
+    """Fetch OHLCV via Tushare with caching, filtered to prevent look-ahead bias."""
+    from .tushare_data import _tushare_load_ohlcv
 
-    Downloads 15 years of data up to today and caches per symbol. On
-    subsequent calls the cache is reused. Rows after curr_date are
-    filtered out so backtests never see future prices.
-    """
-    # Reject ticker values that would escape the cache directory when
-    # interpolated into the cache filename (e.g. ``../../tmp/x``).
-    safe_symbol = safe_ticker_component(symbol)
-
-    config = get_config()
-    curr_date_dt = pd.to_datetime(curr_date)
-
-    # Cache uses a fixed window (15y to today) so one file per symbol
-    today_date = pd.Timestamp.today()
-    start_date = today_date - pd.DateOffset(years=5)
-    start_str = start_date.strftime("%Y-%m-%d")
-    end_str = today_date.strftime("%Y-%m-%d")
-
-    os.makedirs(config["data_cache_dir"], exist_ok=True)
-    data_file = os.path.join(
-        config["data_cache_dir"],
-        f"{safe_symbol}-YFin-data-{start_str}-{end_str}.csv",
-    )
-
-    if os.path.exists(data_file):
-        data = pd.read_csv(data_file, on_bad_lines="skip", encoding="utf-8")
-    else:
-        data = yf_retry(lambda: yf.download(
-            symbol,
-            start=start_str,
-            end=end_str,
-            multi_level_index=False,
-            progress=False,
-            auto_adjust=True,
-        ))
-        data = data.reset_index()
-        data.to_csv(data_file, index=False, encoding="utf-8")
-
-    data = _clean_dataframe(data)
-
-    # Filter to curr_date to prevent look-ahead bias in backtesting
-    data = data[data["Date"] <= curr_date_dt]
-
-    return data
+    return _tushare_load_ohlcv(symbol, curr_date)
 
 
 def filter_financials_by_date(data: pd.DataFrame, curr_date: str) -> pd.DataFrame:
     """Drop financial statement columns (fiscal period timestamps) after curr_date.
 
-    yfinance financial statements use fiscal period end dates as columns.
-    Columns after curr_date represent future data and are removed to
-    prevent look-ahead bias.
+    Some providers expose fiscal period end dates as columns; columns after
+    ``curr_date`` represent future data and are removed to prevent look-ahead bias.
     """
     if not curr_date or data.empty:
         return data

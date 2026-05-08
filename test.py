@@ -1,11 +1,11 @@
+"""Dev smoke script — requires ``TUSHARE_TOKEN`` / ``TUSHARE_API_KEY`` and network."""
 import time
-from tradingagents.dataflows.y_finance import get_YFin_data_online, get_stock_stats_indicators_window, get_balance_sheet as get_yfinance_balance_sheet, get_cashflow as get_yfinance_cashflow, get_income_statement as get_yfinance_income_statement, get_insider_transactions as get_yfinance_insider_transactions
 
-print("Testing optimized implementation with 30-day lookback:")
+from tradingagents.dataflows.tushare_data import get_tushare_indicators
+
+print("Tushare + stockstats (A-share example, 10-day lookback):")
 start_time = time.time()
-result = get_stock_stats_indicators_window("AAPL", "macd", "2024-11-01", 30)
+result = get_tushare_indicators("600519", "macd", "2024-11-01", 10)
 end_time = time.time()
-
-print(f"Execution time: {end_time - start_time:.2f} seconds")
-print(f"Result length: {len(result)} characters")
+print(f"Execution time: {end_time - start_time:.2f}s, length: {len(result)} chars")
 print(result)

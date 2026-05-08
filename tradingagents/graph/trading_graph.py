@@ -7,9 +7,11 @@ import json
 from datetime import datetime, timedelta
 from typing import Dict, Any, Tuple, List, Optional
 
-import yfinance as yf
-
 logger = logging.getLogger(__name__)
+
+# Benchmark for alpha in deferred return resolution (CSI 300 vs Hang Seng).
+_TUSHARE_BENCHMARK_TS = "000300.SH"
+_TUSHARE_HK_BENCHMARK_INDEX = "HSI"
 
 from langgraph.prebuilt import ToolNode
 
@@ -25,6 +27,11 @@ from tradingagents.agents.utils.agent_states import (
     RiskDebateState,
 )
 from tradingagents.dataflows.config import set_config
+from tradingagents.dataflows.tushare_common import resolve_tushare_equity
+from tradingagents.dataflows.tushare_data import (
+    fetch_daily_price_frame,
+    fetch_index_global_close_frame,
+)
 
 # Import the new abstract tool methods from agent_utils
 from tradingagents.agents.utils.agent_utils import (
@@ -202,22 +209,38 @@ class TradingAgentsGraph:
             end = start + timedelta(days=holding_days + 7)  # buffer for weekends/holidays
             end_str = end.strftime("%Y-%m-%d")
 
-            stock = yf.Ticker(ticker).history(start=trade_date, end=end_str)
-            spy = yf.Ticker("SPY").history(start=trade_date, end=end_str)
+            resolved = resolve_tushare_equity(ticker)
+            if not resolved:
+                return None, None, None
+            ts_code, mkt = resolved
+            if mkt == "hk":
+                stock = fetch_daily_price_frame(
+                    ts_code, trade_date, end_str, market="hk"
+                )
+                bench = fetch_index_global_close_frame(
+                    _TUSHARE_HK_BENCHMARK_INDEX, trade_date, end_str
+                )
+            else:
+                stock = fetch_daily_price_frame(
+                    ts_code, trade_date, end_str, market="cn"
+                )
+                bench = fetch_daily_price_frame(
+                    _TUSHARE_BENCHMARK_TS, trade_date, end_str, market="cn"
+                )
 
-            if len(stock) < 2 or len(spy) < 2:
+            if len(stock) < 2 or len(bench) < 2:
                 return None, None, None
 
-            actual_days = min(holding_days, len(stock) - 1, len(spy) - 1)
+            actual_days = min(holding_days, len(stock) - 1, len(bench) - 1)
             raw = float(
                 (stock["Close"].iloc[actual_days] - stock["Close"].iloc[0])
                 / stock["Close"].iloc[0]
             )
-            spy_ret = float(
-                (spy["Close"].iloc[actual_days] - spy["Close"].iloc[0])
-                / spy["Close"].iloc[0]
+            bench_ret = float(
+                (bench["Close"].iloc[actual_days] - bench["Close"].iloc[0])
+                / bench["Close"].iloc[0]
             )
-            alpha = raw - spy_ret
+            alpha = raw - bench_ret
             return raw, alpha, actual_days
         except Exception as e:
             logger.warning(
