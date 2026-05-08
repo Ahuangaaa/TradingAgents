@@ -8,12 +8,11 @@ import tushare as ts
 import pandas as pd
 import os
 
-# 设置tushare API密钥
-# 请在使用前设置您的API密钥, tushare>=1.4.25 版本 支持从环境变量中获取 TUSHARE_TOKEN。
-# ts.set_token('your_token_here')
+# 读取环境变量中的token, 或者读取本地记录的token
+token = os.getenv('TUSHARE_TOKEN') or ts.get_token()
 
 # 初始化pro接口
-pro = ts.pro_api()
+pro = ts.pro_api(token)
 
 
 def get_fund_list():

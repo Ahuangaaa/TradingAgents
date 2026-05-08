@@ -567,40 +567,73 @@ def _macro_market_keywords() -> tuple[str, ...]:
     )
 
 
+def _dedupe_keywords(keys: list[str], *, min_len: int = 2) -> list[str]:
+    """Deduplicate case-insensitively, preserve order, drop blanks / too-short tokens."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in keys:
+        s = str(raw or "").strip()
+        if len(s) < min_len:
+            continue
+        k = s.casefold()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+    return out
+
+
 def _get_tushare_hk_news(ticker: str, ts_code: str, start_date: str, end_date: str) -> str:
-    """港股：无沪深 e互动；``hk_basic`` 拉简称/英文名用于 ``major_news`` / ``news`` 关键词（与 A 股相同语料接口）。"""
+    """港股语料：无沪深 e互动。
+
+    参考 Tushare 技能《港股基础信息》：``hk_basic`` 输出含 ``name``、``fullname``、``enname``、
+    ``cn_spell``、``market``（市场类别）、``isin`` 等。长篇/短讯逻辑对齐 A 股：
+    **代码/ts_code/多语言名称** 命中，或 **``market``** 命中（类似 A 股用 ``industry`` 扩行业稿；
+    同板块其他公司亦可能出现，请以代码/简称为准）。
+    """
     win_start = f"{start_date} 00:00:00"
     win_end = f"{end_date} 23:59:59"
     ph = "（本期无返回数据、或接口权限/参数不支持。）"
-    broad_kw = _macro_market_keywords()
 
     hk_core = ts_code.replace(".HK", "")
-    keywords: list[str] = [ts_code]
+    news_keys: list[str] = [ts_code]
     if hk_core.isdigit():
-        keywords.append(str(int(hk_core)))
-        keywords.append(f"{int(hk_core):05d}")
+        news_keys.append(str(int(hk_core)))
+        news_keys.append(f"{int(hk_core):05d}")
 
     stock_name = ""
-    basic = _try_pro_call("hk_basic", ts_code=ts_code, list_status="L")
+    hk_market = ""
+    basic = _try_pro_call(
+        "hk_basic",
+        ts_code=ts_code,
+        list_status="L",
+        fields="ts_code,name,fullname,enname,cn_spell,market,isin,curr_type",
+    )
+    if basic is None or basic.empty:
+        basic = _try_pro_call("hk_basic", ts_code=ts_code, list_status="L")
     if basic is not None and not basic.empty:
         row = basic.iloc[0]
         stock_name = str(row.get("name") or "").strip()
-        if stock_name and len(stock_name) >= 2:
-            keywords.append(stock_name)
+        if stock_name:
+            news_keys.append(stock_name)
         for col in ("fullname", "enname", "cn_spell"):
             v = str(row.get(col) or "").strip()
-            if len(v) >= 2 and v not in keywords:
-                keywords.append(v)
+            if v:
+                news_keys.append(v)
+        isin = str(row.get("isin") or "").strip()
+        if len(isin) >= 6:
+            news_keys.append(isin)
+        hk_market = str(row.get("market") or "").strip()
 
-    def match_stock(title: str, content: str) -> bool:
+    news_keys = _dedupe_keywords(news_keys, min_len=2)
+
+    def match_company_or_hk_board(title: str, content: str) -> bool:
         blob = f"{title} {content}"
-        return any(k and k in blob for k in keywords)
-
-    def match_stock_or_macro(title: str, content: str) -> bool:
-        if match_stock(title, content):
+        if any(k and k in blob for k in news_keys):
             return True
-        blob = f"{title} {content}"
-        return any(k in blob for k in broad_kw)
+        if hk_market and len(hk_market) >= 2 and hk_market in blob:
+            return True
+        return False
 
     major_srcs = ("新浪财经", "财联社", "第一财经", "华尔街见闻", "中证网", "同花顺")
     flash_srcs = ("sina", "eastmoney", "10jqka", "cls", "yicai", "fenghuang", "jinrongjie", "wallstreetcn")
@@ -613,59 +646,36 @@ def _get_tushare_hk_news(ticker: str, ts_code: str, start_date: str, end_date: s
         "> **说明**：`npr` 为**国家政策法规库**（部委公开文件），不是证券「个股新闻」检索；"
         "下列为时间窗内政策摘要，用作**宏观与监管背景**。\n\n"
     )
-    sec3 = _npr_policy_lines(win_start, win_end, [], max_rows=28)
+    npr_kw: list[str] = [hk_market] if hk_market and len(hk_market) >= 2 else []
+    sec3 = _npr_policy_lines(win_start, win_end, npr_kw, max_rows=28)
 
-    sec4 = _major_news_lines(win_start, win_end, match_stock, major_srcs, per_src_cap=12)
-    sec4_extra = ""
-    if not sec4:
-        sec4 = _major_news_lines(
-            win_start, win_end, match_stock_or_macro, major_srcs, per_src_cap=8
-        )
-        if sec4:
-            sec4_extra = (
-                "> **补充**：长篇通讯未强命中该股代码/简称/英文名时，已附带**宏观或市场类**条目。\n\n"
-            )
-    if not sec4:
-        sec4 = _major_news_lines(
-            win_start, win_end, lambda _t, _c: True, major_srcs, per_src_cap=5
-        )
-        if sec4:
-            sec4_extra = (
-                "> **补充**：下列为时间窗内长篇要闻摘要（未逐条校验与该股关联）。\n\n"
-            )
+    sec4 = _major_news_lines(win_start, win_end, match_company_or_hk_board, major_srcs, per_src_cap=12)
+    sec5 = _flash_news_lines(win_start, win_end, match_company_or_hk_board, flash_srcs, per_src_cap=15)
 
-    sec5 = _flash_news_lines(win_start, win_end, match_stock, flash_srcs, per_src_cap=15)
-    sec5_extra = ""
-    if not sec5:
-        sec5 = _flash_news_lines(
-            win_start, win_end, match_stock_or_macro, flash_srcs, per_src_cap=10
+    news_hdr = (
+        f"窗口: {start_date} ~ {end_date} | ④⑤ 匹配（港股 ``hk_basic``）：**{', '.join(news_keys)}**"
+        + (
+            f" 或 **市场类别「{hk_market}」**（同市场其他标的稿件也可能命中，请以 ts_code/简称为准）"
+            if hk_market
+            else ""
         )
-        if sec5:
-            sec5_extra = "> **补充**：短讯附带宏观/市场类关键词命中项。\n\n"
-    if not sec5:
-        sec5 = _flash_news_lines(
-            win_start, win_end, lambda _t, _c: True, flash_srcs, per_src_cap=6
-        )
-        if sec5:
-            sec5_extra = "> **补充**：下列为时间窗内短讯要闻摘要（未校验与该股关联）。\n\n"
-
+    )
     blocks = [
-        f"## Tushare 大模型语料（港股 + 共用语料）— {ticker} / {ts_code}\n\n"
-        f"窗口: {start_date} ~ {end_date} | 新闻匹配关键词: {', '.join(keywords)}",
+        f"## Tushare 大模型语料（港股 + 共用语料）— {ticker} / {ts_code}\n\n{news_hdr}",
         f"### ① 互动问答 · 上证e互动（irm_qa_sh）\n\n{irm_ph}",
         f"### ② 互动问答 · 深证互动易（irm_qa_sz）\n\n{irm_ph}",
         f"### ③ 国家政策库（npr）\n\n{npr_hint}"
         + ("\n".join(sec3) if sec3 else ph),
-        f"### ④ 新闻快讯 · 长篇通讯（major_news）\n\n{sec4_extra}"
+        f"### ④ 新闻快讯 · 长篇通讯（major_news）\n\n"
         + ("\n".join(sec4) if sec4 else ph),
-        f"### ⑤ 新闻快讯 · 短讯（news）\n\n{sec5_extra}"
+        f"### ⑤ 新闻快讯 · 短讯（news）\n\n"
         + ("\n".join(sec5) if sec5 else ph),
     ]
     if not (sec3 or sec4 or sec5):
         blocks.append(
             "\n---\n**说明**：港股语料依赖 **hk_basic** 与中文财经 ``major_news``/``news`` 权限；"
             "若为空请检查 Tushare 港股与语料接口权限。"
-            f"（简称：{stock_name or '未取到'}）"
+            f"（简称：{stock_name or '未取到'}；市场类别 market：{hk_market or '未取到'}）"
         )
     return "\n\n".join(blocks).strip()
 
@@ -678,7 +688,8 @@ def get_tushare_news(
     """五项大模型语料：A 股含沪深 e互动；港股无 e互动但共用 ``npr`` + ``major_news`` + ``news``。
 
     - **国家政策库**为部委公开法规，**不是按代码的个股新闻**。
-    - **长篇/短讯**对 A 股用 ``stock_basic`` 行业等扩词；对港股用 ``hk_basic`` 简称/英文名等，逻辑与 A 股一致。
+    - **长篇/短讯**命中规则：**证券代码、ts_code、证券简称**，以及 **`stock_basic` 行业名**（便于纳入行业动态；同行业其他公司稿件也可能命中，请以代码/简称为准）。
+    - **港股**无 ``stock_basic``：用 ``hk_basic`` 的 **``name`` / ``fullname`` / ``enname`` / ``cn_spell`` / ``isin``** 与 **``market``（市场类别，技能文档字段）** 对应 A 股的「简称 + 行业扩召回」；``npr`` 排序亦可用 ``market``。
     - 无法识别为 A 股或港股 Tushare 代码时（如美股），仍返回 ``npr`` + 新闻降级结果。
     """
     win_start = f"{start_date} 00:00:00"
@@ -703,21 +714,17 @@ def get_tushare_news(
         industry = str(row.get("industry") or "").strip()
 
     code6 = ts_code.split(".")[0]
-    keywords: list[str] = [code6]
+    news_keys: list[str] = [code6, ts_code]
     if stock_name and len(stock_name) >= 2:
-        keywords.append(stock_name)
-    if industry and len(industry) >= 2 and industry not in keywords:
-        keywords.append(industry)
+        news_keys.append(stock_name)
 
-    def match_stock(title: str, content: str) -> bool:
+    def match_company_or_industry(title: str, content: str) -> bool:
         blob = f"{title} {content}"
-        return any(k and k in blob for k in keywords)
-
-    def match_stock_or_macro(title: str, content: str) -> bool:
-        if match_stock(title, content):
+        if any(k and k in blob for k in news_keys):
             return True
-        blob = f"{title} {content}"
-        return any(k in blob for k in broad_kw)
+        if industry and len(industry) >= 2 and industry in blob:
+            return True
+        return False
 
     major_srcs = ("新浪财经", "财联社", "第一财经", "华尔街见闻", "中证网", "同花顺")
     flash_srcs = ("sina", "eastmoney", "10jqka", "cls", "yicai", "fenghuang", "jinrongjie", "wallstreetcn")
@@ -733,55 +740,23 @@ def get_tushare_news(
     npr_kw: list[str] = [industry] if industry and len(industry) >= 2 else []
     sec3 = _npr_policy_lines(win_start, win_end, npr_kw, max_rows=28)
 
-    sec4 = _major_news_lines(win_start, win_end, match_stock, major_srcs, per_src_cap=12)
-    sec4_extra = ""
-    if not sec4:
-        sec4 = _major_news_lines(
-            win_start, win_end, match_stock_or_macro, major_srcs, per_src_cap=8
-        )
-        if sec4:
-            sec4_extra = (
-                "> **补充**：未筛到标题/正文**明确含该股代码、简称或所属行业名**的长篇通讯，"
-                "已改为附带**同时间段宏观/市场类**长篇条目（未必与该股直接相关）。\n\n"
-            )
-    if not sec4:
-        sec4 = _major_news_lines(
-            win_start, win_end, lambda _t, _c: True, major_srcs, per_src_cap=5
-        )
-        if sec4:
-            sec4_extra = (
-                "> **补充**：仍无行业/个股关键词命中，下列为数据源时间窗内**要闻摘要**（未校验与该股关联）。\n\n"
-            )
+    # 长篇/短讯：代码/简称 **或** 行业（无宏观、无「无条件要闻」降级，减少无关头条）。
+    sec4 = _major_news_lines(win_start, win_end, match_company_or_industry, major_srcs, per_src_cap=12)
+    sec5 = _flash_news_lines(win_start, win_end, match_company_or_industry, flash_srcs, per_src_cap=15)
 
-    sec5 = _flash_news_lines(win_start, win_end, match_stock, flash_srcs, per_src_cap=15)
-    sec5_extra = ""
-    if not sec5:
-        sec5 = _flash_news_lines(
-            win_start, win_end, match_stock_or_macro, flash_srcs, per_src_cap=10
-        )
-        if sec5:
-            sec5_extra = (
-                "> **补充**：短讯未命中该股/行业关键词，已附带**宏观或市场类**短讯。\n\n"
-            )
-    if not sec5:
-        sec5 = _flash_news_lines(
-            win_start, win_end, lambda _t, _c: True, flash_srcs, per_src_cap=6
-        )
-        if sec5:
-            sec5_extra = (
-                "> **补充**：下列为时间窗内短讯要闻摘要（未校验与该股关联）。\n\n"
-            )
-
+    news_hdr = (
+        f"窗口: {start_date} ~ {end_date} | ④⑤ 匹配：**{', '.join(news_keys)}**"
+        + (f" 或 **行业「{industry}」**（行业稿可能含同行业其他公司，请以代码/简称为准）" if industry else "")
+    )
     blocks = [
-        f"## Tushare 大模型语料（五项）— {ticker} / {ts_code}\n\n"
-        f"窗口: {start_date} ~ {end_date} | 新闻匹配关键词（代码/简称/行业）: {', '.join(keywords)}",
+        f"## Tushare 大模型语料（五项）— {ticker} / {ts_code}\n\n{news_hdr}",
         f"### ① 互动问答 · 上证e互动（irm_qa_sh）\n\n" + ("\n".join(sec1) if sec1 else ph),
         f"### ② 互动问答 · 深证互动易（irm_qa_sz）\n\n" + ("\n".join(sec2) if sec2 else ph),
         f"### ③ 国家政策库（npr）\n\n{npr_hint}"
         + ("\n".join(sec3) if sec3 else ph),
-        f"### ④ 新闻快讯 · 长篇通讯（major_news）\n\n{sec4_extra}"
+        f"### ④ 新闻快讯 · 长篇通讯（major_news）\n\n"
         + ("\n".join(sec4) if sec4 else ph),
-        f"### ⑤ 新闻快讯 · 短讯（news）\n\n{sec5_extra}"
+        f"### ⑤ 新闻快讯 · 短讯（news）\n\n"
         + ("\n".join(sec5) if sec5 else ph),
     ]
     if not (sec1 or sec2 or sec3 or sec4 or sec5):
