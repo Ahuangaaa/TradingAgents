@@ -81,23 +81,25 @@ class TradingAgentsGraph:
         os.makedirs(self.config["results_dir"], exist_ok=True)
 
         # Initialize LLMs with provider-specific thinking configuration
-        llm_kwargs = self._get_provider_kwargs()
+        # (DeepSeek: quick vs deep can differ — e.g. max effort + thinking only on deep.)
+        deep_llm_kwargs = self._get_llm_kwargs_for_client(for_deep=True)
+        quick_llm_kwargs = self._get_llm_kwargs_for_client(for_deep=False)
 
-        # Add callbacks to kwargs if provided (passed to LLM constructor)
         if self.callbacks:
-            llm_kwargs["callbacks"] = self.callbacks
+            deep_llm_kwargs["callbacks"] = self.callbacks
+            quick_llm_kwargs["callbacks"] = self.callbacks
 
         deep_client = create_llm_client(
             provider=self.config["llm_provider"],
             model=self.config["deep_think_llm"],
             base_url=self.config.get("backend_url"),
-            **llm_kwargs,
+            **deep_llm_kwargs,
         )
         quick_client = create_llm_client(
             provider=self.config["llm_provider"],
             model=self.config["quick_think_llm"],
             base_url=self.config.get("backend_url"),
-            **llm_kwargs,
+            **quick_llm_kwargs,
         )
 
         self.deep_thinking_llm = deep_client.get_llm()
@@ -134,9 +136,9 @@ class TradingAgentsGraph:
         self.graph = self.workflow.compile()
         self._checkpointer_ctx = None
 
-    def _get_provider_kwargs(self) -> Dict[str, Any]:
-        """Get provider-specific kwargs for LLM client creation."""
-        kwargs = {}
+    def _get_llm_kwargs_for_client(self, *, for_deep: bool) -> Dict[str, Any]:
+        """Provider-specific kwargs for one LLM client (quick vs deep may differ)."""
+        kwargs: Dict[str, Any] = {}
         provider = self.config.get("llm_provider", "").lower()
 
         if provider == "google":
@@ -153,6 +155,20 @@ class TradingAgentsGraph:
             effort = self.config.get("anthropic_effort")
             if effort:
                 kwargs["effort"] = effort
+
+        elif provider == "deepseek":
+            if for_deep:
+                if self.config.get("deepseek_deep_thinking_enabled", True):
+                    kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+                    kwargs["reasoning_effort"] = (
+                        self.config.get("deepseek_deep_reasoning_effort") or "max"
+                    )
+            else:
+                if self.config.get("deepseek_quick_thinking_enabled", False):
+                    kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+                    kwargs["reasoning_effort"] = (
+                        self.config.get("deepseek_quick_reasoning_effort") or "max"
+                    )
 
         return kwargs
 

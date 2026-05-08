@@ -25,6 +25,12 @@ DEFAULT_CONFIG = {
     "google_thinking_level": None,      # "high", "minimal", etc.
     "openai_reasoning_effort": None,    # "medium", "high", "low"
     "anthropic_effort": None,           # "high", "medium", "low"
+    # DeepSeek V4 extended thinking: quick vs deep LLM are configured separately
+    # (reasoning_effort + extra_body["thinking"]). Deep model defaults to max effort.
+    "deepseek_quick_thinking_enabled": True,
+    "deepseek_quick_reasoning_effort": "max",
+    "deepseek_deep_thinking_enabled": True,
+    "deepseek_deep_reasoning_effort": "max",
     # Checkpoint/resume: when True, LangGraph saves state after each node
     # so a crashed run can resume from the last successful step.
     "checkpoint_enabled": False,

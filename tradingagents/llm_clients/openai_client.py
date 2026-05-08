@@ -52,18 +52,10 @@ def _input_to_messages(input_: Any) -> list:
 class DeepSeekChatOpenAI(NormalizedChatOpenAI):
     """DeepSeek-specific overrides on top of the OpenAI-compatible client.
 
-    Two quirks that don't apply to other OpenAI-compatible providers:
-
-    1. **Thinking-mode round-trip.** When DeepSeek's thinking models return
-       a response with ``reasoning_content``, that field must be echoed
-       back as part of the assistant message on the next turn or the API
-       fails with HTTP 400. ``_create_chat_result`` captures the field on
-       receive and ``_get_request_payload`` re-attaches it on send.
-
-    2. **deepseek-reasoner has no tool_choice.** Structured output via
-       function-calling is unavailable, so we raise NotImplementedError
-       and let the agent factories fall back to free-text generation
-       (see ``tradingagents/agents/utils/structured.py``).
+    **Thinking-mode round-trip** (V4): when the API returns ``reasoning_content``,
+    it must be echoed on the assistant message on the next turn or the API
+    returns HTTP 400. ``_create_chat_result`` captures it on receive and
+    ``_get_request_payload`` re-attaches it on send.
     """
 
     def _get_request_payload(self, input_, *, stop=None, **kwargs):
@@ -94,19 +86,16 @@ class DeepSeekChatOpenAI(NormalizedChatOpenAI):
                 generation.message.additional_kwargs["reasoning_content"] = reasoning
         return chat_result
 
-    def with_structured_output(self, schema, *, method=None, **kwargs):
-        if self.model_name == "deepseek-reasoner":
-            raise NotImplementedError(
-                "deepseek-reasoner does not support tool_choice; structured "
-                "output is unavailable. Agent factories fall back to "
-                "free-text generation automatically."
-            )
-        return super().with_structured_output(schema, method=method, **kwargs)
-
 # Kwargs forwarded from user config to ChatOpenAI
 _PASSTHROUGH_KWARGS = (
-    "timeout", "max_retries", "reasoning_effort",
-    "api_key", "callbacks", "http_client", "http_async_client",
+    "timeout",
+    "max_retries",
+    "reasoning_effort",
+    "extra_body",
+    "api_key",
+    "callbacks",
+    "http_client",
+    "http_async_client",
 )
 
 # Provider base URLs and API key env vars
