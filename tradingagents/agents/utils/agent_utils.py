@@ -24,14 +24,24 @@ def get_language_instruction() -> str:
     """Return a prompt instruction for the configured output language.
 
     Returns empty string when English (default), so no extra tokens are used.
-    Only applied to user-facing agents (analysts, portfolio manager).
-    Internal debate agents stay in English for reasoning quality.
+    Applied to analysts, trader, risk debators, and portfolio manager so saved
+    markdown matches the CLI ``output_language`` choice. (Structured enums such
+    as Buy/Hold/Sell stay in English for schema compatibility.)
     """
     from tradingagents.dataflows.config import get_config
     lang = get_config().get("output_language", "English")
     if lang.strip().lower() == "english":
         return ""
     return f" Write your entire response in {lang}."
+
+
+def get_web_fetch_tool_hint() -> str:
+    """Prompt snippet: when to call ``fetch_url`` for official docs (allowlisted https only)."""
+    return (
+        " When official field definitions or documentation are required and not present in tool output, "
+        "call `fetch_url` with a full **https** URL on an allowlisted host (default: tushare.pro). "
+        "Do not guess precise API field meanings when accuracy is required—retrieve the doc page first."
+    )
 
 
 def build_instrument_context(ticker: str) -> str:

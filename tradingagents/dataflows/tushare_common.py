@@ -1,14 +1,12 @@
-"""Tushare Pro client and helpers (A-share and Hong Kong equities)."""
+"""Tushare Pro client and helpers (A-shares only)."""
 
 from __future__ import annotations
 
 import os
 import re
-from typing import Literal, Optional
+from typing import Optional
 
 import tushare as ts
-
-EquityMarket = Literal["cn", "hk"]
 
 
 class TushareVendorError(RuntimeError):
@@ -43,31 +41,6 @@ def get_pro():
 
 def to_yyyymmdd(date_yyyy_mm_dd: str) -> str:
     return date_yyyy_mm_dd.replace("-", "")[:8]
-
-
-def symbol_to_hk_ts_code(symbol: str) -> Optional[str]:
-    """
-    Map a user ticker to Tushare Hong Kong ``ts_code`` (``00700.HK`` style, 5 digits + .HK).
-
-    Accepts ``00700.HK``, ``HK00700``, ``HK9992``, ``9992``, etc. Returns ``None`` if not HK-shaped.
-    """
-    raw = (symbol or "").strip().upper()
-    if not raw:
-        return None
-
-    m = re.match(r"^(\d{1,5})\.HK$", raw)
-    if m:
-        return f"{int(m.group(1)):05d}.HK"
-
-    m = re.match(r"^HK\.?(\d{1,5})$", raw)
-    if m:
-        return f"{int(m.group(1)):05d}.HK"
-
-    digits = re.sub(r"\D", "", raw.split(".")[0])
-    if digits.isdigit() and 1 <= len(digits) <= 5:
-        return f"{int(digits):05d}.HK"
-
-    return None
 
 
 def symbol_to_ts_code(symbol: str) -> Optional[str]:
@@ -110,18 +83,9 @@ def symbol_to_ts_code(symbol: str) -> Optional[str]:
     return None
 
 
-def resolve_tushare_equity(symbol: str) -> Optional[tuple[str, EquityMarket]]:
-    """Resolve **A-share** or **Hong Kong** listing to ``(ts_code, 'cn'|'hk')``.
-
-    A-share is tried first (6-digit mainland codes); then HK (``xxxxx.HK`` / ``HK`` prefix / 1–5 digits).
-    """
-    cn = symbol_to_ts_code(symbol)
-    if cn:
-        return (cn, "cn")
-    hk = symbol_to_hk_ts_code(symbol)
-    if hk:
-        return (hk, "hk")
-    return None
+def resolve_tushare_equity(symbol: str) -> Optional[str]:
+    """Resolve user input to Tushare A-share ``ts_code`` (``daily`` / ``stock_basic`` 等）。"""
+    return symbol_to_ts_code(symbol)
 
 
 def require_ts_code(symbol: str) -> str:
@@ -129,16 +93,17 @@ def require_ts_code(symbol: str) -> str:
     if not code:
         raise TushareVendorError(
             f"Tushare does not recognize '{symbol}' as an A-share ts_code "
-            f"(use 6-digit .SH/.SZ/.BJ, or Hong Kong e.g. 00700.HK / HK00700)."
+            f"(use 6-digit .SH/.SZ/.BJ, e.g. 600519 or 600519.SH)."
         )
     return code
 
 
-def require_equity_ts(symbol: str) -> tuple[str, EquityMarket]:
-    """Require A-share or Hong Kong ``ts_code`` (Tushare ``daily`` / ``hk_daily``)."""
+def require_equity_ts(symbol: str) -> str:
+    """Require A-share ``ts_code`` for ``daily`` and related interfaces."""
     r = resolve_tushare_equity(symbol)
     if not r:
         raise TushareVendorError(
-            f"Tushare does not recognize '{symbol}' as A-share (6-digit) or Hong Kong (xxxxx.HK)."
+            f"Tushare does not recognize '{symbol}' as an A-share ts_code "
+            f"(use 6-digit .SH/.SZ/.BJ, e.g. 600519 or 600519.SH)."
         )
     return r

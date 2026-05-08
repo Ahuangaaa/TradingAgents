@@ -9,9 +9,8 @@ from typing import Dict, Any, Tuple, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Benchmark for alpha in deferred return resolution (CSI 300 vs Hang Seng).
+# Benchmark for alpha in deferred return resolution (CSI 300).
 _TUSHARE_BENCHMARK_TS = "000300.SH"
-_TUSHARE_HK_BENCHMARK_INDEX = "HSI"
 
 from langgraph.prebuilt import ToolNode
 
@@ -28,10 +27,7 @@ from tradingagents.agents.utils.agent_states import (
 )
 from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.tushare_common import resolve_tushare_equity
-from tradingagents.dataflows.tushare_data import (
-    fetch_daily_price_frame,
-    fetch_index_global_close_frame,
-)
+from tradingagents.dataflows.tushare_data import fetch_daily_price_frame
 
 # Import the new abstract tool methods from agent_utils
 from tradingagents.agents.utils.agent_utils import (
@@ -43,8 +39,9 @@ from tradingagents.agents.utils.agent_utils import (
     get_income_statement,
     get_news,
     get_insider_transactions,
-    get_global_news
+    get_global_news,
 )
+from tradingagents.agents.utils.web_fetch_tool import fetch_url
 
 from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id
 from .conditional_logic import ConditionalLogic
@@ -168,12 +165,14 @@ class TradingAgentsGraph:
                     get_stock_data,
                     # Technical indicators
                     get_indicators,
+                    fetch_url,
                 ]
             ),
             "social": ToolNode(
                 [
                     # News tools for social media analysis
                     get_news,
+                    fetch_url,
                 ]
             ),
             "news": ToolNode(
@@ -182,6 +181,7 @@ class TradingAgentsGraph:
                     get_news,
                     get_global_news,
                     get_insider_transactions,
+                    fetch_url,
                 ]
             ),
             "fundamentals": ToolNode(
@@ -191,6 +191,7 @@ class TradingAgentsGraph:
                     get_balance_sheet,
                     get_cashflow,
                     get_income_statement,
+                    fetch_url,
                 ]
             ),
         }
@@ -209,24 +210,11 @@ class TradingAgentsGraph:
             end = start + timedelta(days=holding_days + 7)  # buffer for weekends/holidays
             end_str = end.strftime("%Y-%m-%d")
 
-            resolved = resolve_tushare_equity(ticker)
-            if not resolved:
+            ts_code = resolve_tushare_equity(ticker)
+            if not ts_code:
                 return None, None, None
-            ts_code, mkt = resolved
-            if mkt == "hk":
-                stock = fetch_daily_price_frame(
-                    ts_code, trade_date, end_str, market="hk"
-                )
-                bench = fetch_index_global_close_frame(
-                    _TUSHARE_HK_BENCHMARK_INDEX, trade_date, end_str
-                )
-            else:
-                stock = fetch_daily_price_frame(
-                    ts_code, trade_date, end_str, market="cn"
-                )
-                bench = fetch_daily_price_frame(
-                    _TUSHARE_BENCHMARK_TS, trade_date, end_str, market="cn"
-                )
+            stock = fetch_daily_price_frame(ts_code, trade_date, end_str)
+            bench = fetch_daily_price_frame(_TUSHARE_BENCHMARK_TS, trade_date, end_str)
 
             if len(stock) < 2 or len(bench) < 2:
                 return None, None, None

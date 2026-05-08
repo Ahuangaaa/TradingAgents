@@ -28,8 +28,8 @@ DEFAULT_CONFIG = {
     # Checkpoint/resume: when True, LangGraph saves state after each node
     # so a crashed run can resume from the last successful step.
     "checkpoint_enabled": False,
-    # Output language for analyst reports and final decision
-    # Internal agent debate stays in English for reasoning quality
+    # Output language for saved reports (analysts, trader, risk debate, portfolio manager).
+    # Structured rating enums (Buy/Hold/Sell, etc.) stay English for schema compatibility.
     "output_language": "English",
     # Debate and discussion settings
     "max_debate_rounds": 1,
@@ -46,4 +46,9 @@ DEFAULT_CONFIG = {
     "tool_vendors": {
         # Example: "get_stock_data": "tushare",
     },
+    # Analyst tool fetch_url: HTTPS only, host allowlist, caps (SSRF mitigation).
+    "web_fetch_enabled": True,
+    "web_fetch_allowed_hosts": ["tushare.pro", "www.tushare.pro"],
+    "web_fetch_max_bytes": 524288,
+    "web_fetch_timeout_sec": 20,
 }

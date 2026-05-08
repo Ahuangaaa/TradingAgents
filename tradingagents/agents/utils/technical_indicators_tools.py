@@ -12,6 +12,13 @@ def get_indicators(
     """
     Retrieve a single technical indicator for a given ticker symbol.
     Uses the configured technical_indicators vendor.
+
+    Underlying OHLCV comes from Tushare ``daily``; indicator names follow the ``stockstats`` library
+    (not a separate Tushare table). Official ``daily`` field definitions:
+    https://tushare.pro/document/2?doc_id=27
+    https://tushare.pro/wctapi/documents/27.md
+    Use ``fetch_url`` on tushare.pro if you need to confirm raw column meanings before interpreting indicators.
+
     Args:
         symbol (str): Ticker symbol of the company, e.g. AAPL, TSM
         indicator (str): A single technical indicator name, e.g. 'rsi', 'macd'. Call this tool once per indicator.

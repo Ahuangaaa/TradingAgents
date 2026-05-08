@@ -12,6 +12,11 @@ def get_stock_data(
     """
     Retrieve stock price data (OHLCV) for a given ticker symbol.
     Uses the configured core_stock_apis vendor.
+
+    Official Tushare API docs (A-share ``daily``; use ``fetch_url`` on tushare.pro to align column meanings):
+    https://tushare.pro/document/2?doc_id=27
+    https://tushare.pro/wctapi/documents/27.md
+
     Args:
         symbol (str): Ticker symbol of the company, e.g. AAPL, TSM
         start_date (str): Start date in yyyy-mm-dd format

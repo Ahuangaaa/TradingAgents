@@ -1,4 +1,4 @@
-"""Tushare-backed implementations for ``route_to_vendor`` (A-share + Hong Kong; see project skill references)."""
+"""Tushare-backed implementations for ``route_to_vendor`` (A-shares only; see project skill references)."""
 
 from __future__ import annotations
 
@@ -169,23 +169,138 @@ def _flash_news_lines(
     return lines
 
 
+def _anns_d_lines(ts_code: str, d0: str, d1: str, *, max_rows: int = 28) -> list[str]:
+    """上市公司全量公告 ``anns_d``（日期 ``YYYYMMDD``）。"""
+    df = _try_pro_call("anns_d", ts_code=ts_code, start_date=d0, end_date=d1)
+    if df is None or df.empty:
+        return []
+    if "ann_date" in df.columns:
+        df = df.sort_values("ann_date", ascending=False)
+    out: list[str] = []
+    for _, r in df.head(max_rows).iterrows():
+        ad = r.get("ann_date", "")
+        title = str(r.get("title", "")).strip()
+        name = str(r.get("name", "")).strip()
+        url = str(r.get("url", "")).strip()
+        rec = r.get("rec_time", "")
+        head = f"### {ad}"
+        if rec:
+            head += f" | {rec}"
+        out.append(f"{head}\n**{name}** ({r.get('ts_code', '')})\n{title}\n{url}\n")
+    return out
+
+
+def _research_report_lines(
+    ts_code: str,
+    industry: str,
+    d0: str,
+    d1: str,
+    *,
+    max_stock: int = 14,
+    max_industry: int = 10,
+) -> list[str]:
+    """券商研报 ``research_report``；个股 + 可选行业（``ind_name`` 与库内一致时才有命中）。"""
+    out: list[str] = []
+    seen: set[str] = set()
+
+    df_s = _try_pro_call(
+        "research_report",
+        ts_code=ts_code,
+        start_date=d0,
+        end_date=d1,
+        report_type="个股研报",
+    )
+    if df_s is not None and not df_s.empty:
+        if "trade_date" in df_s.columns:
+            df_s = df_s.sort_values("trade_date", ascending=False)
+        for _, r in df_s.head(max_stock).iterrows():
+            title = str(r.get("title", "") or r.get("file_name", "")).strip()
+            td = r.get("trade_date", "")
+            key = f"{td}|{title}"
+            if key in seen:
+                continue
+            seen.add(key)
+            abstr = str(r.get("abstr", "")).strip()
+            if len(abstr) > 1200:
+                abstr = abstr[:1200] + "…"
+            out.append(
+                f"### {td} | {r.get('inst_csname', '')} [{r.get('report_type', '')}]\n**{title}**\n"
+                f"{r.get('name', '')} ({r.get('ts_code', '')}) | {r.get('author', '')}\n{abstr}\n"
+                f"{str(r.get('url', '')).strip()}\n"
+            )
+
+    ind = (industry or "").strip()
+    if ind and len(ind) >= 2:
+        df_i = _try_pro_call(
+            "research_report",
+            ind_name=ind,
+            start_date=d0,
+            end_date=d1,
+            report_type="行业研报",
+        )
+        if df_i is not None and not df_i.empty:
+            if "trade_date" in df_i.columns:
+                df_i = df_i.sort_values("trade_date", ascending=False)
+            for _, r in df_i.head(max_industry).iterrows():
+                title = str(r.get("title", "") or r.get("file_name", "")).strip()
+                td = r.get("trade_date", "")
+                key = f"{td}|{title}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                abstr = str(r.get("abstr", "")).strip()
+                if len(abstr) > 1200:
+                    abstr = abstr[:1200] + "…"
+                out.append(
+                    f"### {td} | {r.get('inst_csname', '')} [{r.get('report_type', '')}]\n**{title}**\n"
+                    f"{r.get('ind_name', '')} | {r.get('author', '')}\n{abstr}\n"
+                    f"{str(r.get('url', '')).strip()}\n"
+                )
+    return out
+
+
+def _research_report_global_lines(
+    d0: str,
+    d1: str,
+    match_fn,
+    *,
+    max_rows: int = 36,
+) -> list[str]:
+    """时间窗内研报抽样，按 ``match_fn(title, abstr)`` 过滤。"""
+    df = _try_pro_call("research_report", start_date=d0, end_date=d1)
+    if df is None or df.empty:
+        return []
+    if "trade_date" in df.columns:
+        df = df.sort_values("trade_date", ascending=False)
+    out: list[str] = []
+    for _, r in df.iterrows():
+        title = str(r.get("title", "") or r.get("file_name", "")).strip()
+        abstr = str(r.get("abstr", "")).strip()
+        if not match_fn(title, abstr):
+            continue
+        if len(abstr) > 1000:
+            abstr = abstr[:1000] + "…"
+        out.append(
+            f"### {r.get('trade_date', '')} | {r.get('inst_csname', '')} [{r.get('report_type', '')}]\n"
+            f"**{title}**\n{r.get('name', '')} ({r.get('ts_code', '')}) | {r.get('author', '')}\n{abstr}\n"
+            f"{str(r.get('url', '')).strip()}\n"
+        )
+        if len(out) >= max_rows:
+            break
+    return out
+
+
 def fetch_daily_price_frame(
     ts_code: str,
     start_date: str,
     end_date: str,
-    *,
-    market: str = "cn",
 ) -> pd.DataFrame:
     """Daily bars as a small DataFrame with ``Close`` (for return / benchmark math).
 
-    ``start_date`` / ``end_date`` are ``YYYY-MM-DD``. Index is trade dates.
-    ``market`` is ``cn`` (``daily``) or ``hk`` (``hk_daily``).
+    ``start_date`` / ``end_date`` are ``YYYY-MM-DD``. Index is trade dates (``daily``).
     """
     d0, d1 = to_yyyymmdd(start_date), to_yyyymmdd(end_date)
-    if market == "hk":
-        raw = _try_pro_call("hk_daily", ts_code=ts_code, start_date=d0, end_date=d1)
-    else:
-        raw = _try_pro_call("daily", ts_code=ts_code, start_date=d0, end_date=d1)
+    raw = _try_pro_call("daily", ts_code=ts_code, start_date=d0, end_date=d1)
     if raw is None or raw.empty:
         return pd.DataFrame({"Close": []})
     raw = raw.sort_values("trade_date")
@@ -221,30 +336,19 @@ def get_tushare_stock_data(
 ) -> str:
     datetime.strptime(start_date, "%Y-%m-%d")
     datetime.strptime(end_date, "%Y-%m-%d")
-    resolved = resolve_tushare_equity(symbol)
-    if not resolved:
+    ts_code = resolve_tushare_equity(symbol)
+    if not ts_code:
         raise TushareVendorError(
-            f"Tushare does not recognize '{symbol}' as A-share (6-digit) or Hong Kong (xxxxx.HK)."
+            f"Tushare does not recognize '{symbol}' as an A-share (6-digit .SH/.SZ/.BJ)."
         )
-    ts_code, mkt = resolved
-    if mkt == "hk":
-        df = _safe_pro_call(
-            "hk_daily",
-            ts_code=ts_code,
-            start_date=to_yyyymmdd(start_date),
-            end_date=to_yyyymmdd(end_date),
-        )
-        src = "hk_daily"
-    else:
-        df = _safe_pro_call(
-            "daily",
-            ts_code=ts_code,
-            start_date=to_yyyymmdd(start_date),
-            end_date=to_yyyymmdd(end_date),
-        )
-        src = "daily"
+    df = _safe_pro_call(
+        "daily",
+        ts_code=ts_code,
+        start_date=to_yyyymmdd(start_date),
+        end_date=to_yyyymmdd(end_date),
+    )
     if df is None or df.empty:
-        raise TushareVendorError(f"Tushare {src} returned no rows for {ts_code}.")
+        raise TushareVendorError(f"Tushare daily returned no rows for {ts_code}.")
 
     df = df.sort_values("trade_date")
     out = pd.DataFrame(
@@ -265,8 +369,7 @@ def get_tushare_stock_data(
             df[col] = pd.to_numeric(df[col], errors="coerce").round(2)
 
     csv_string = df.to_csv()
-    mlabel = "Hong Kong (hk_daily)" if mkt == "hk" else "A-share (daily)"
-    header = f"# Stock data (Tushare {mlabel}) for {ts_code} from {start_date} to {end_date}\n"
+    header = f"# Stock data (Tushare A-share daily) for {ts_code} from {start_date} to {end_date}\n"
     header += f"# Total records: {len(df)}\n"
     header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
     return header + csv_string
@@ -274,12 +377,11 @@ def get_tushare_stock_data(
 
 def _tushare_load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     """OHLCV DataFrame compatible with stockstats (same shape as ``load_ohlcv`` from Yahoo path)."""
-    resolved = resolve_tushare_equity(symbol)
-    if not resolved:
+    ts_code = resolve_tushare_equity(symbol)
+    if not ts_code:
         raise TushareVendorError(
-            f"Tushare does not recognize '{symbol}' as A-share or Hong Kong (xxxxx.HK)."
+            f"Tushare does not recognize '{symbol}' as an A-share (6-digit .SH/.SZ/.BJ)."
         )
-    ts_code, mkt = resolved
     safe_symbol = safe_ticker_component(symbol)
     config = get_config()
     curr_date_dt = pd.to_datetime(curr_date)
@@ -289,22 +391,18 @@ def _tushare_load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     end_str = today_date.strftime("%Y-%m-%d")
 
     os.makedirs(config["data_cache_dir"], exist_ok=True)
-    mtag = "hk" if mkt == "hk" else "cn"
     data_file = os.path.join(
         config["data_cache_dir"],
-        f"{safe_symbol}-tushare-{mtag}-{to_yyyymmdd(start_str)}-{to_yyyymmdd(end_str)}.csv",
+        f"{safe_symbol}-tushare-cn-{to_yyyymmdd(start_str)}-{to_yyyymmdd(end_str)}.csv",
     )
 
     if os.path.exists(data_file):
         data = pd.read_csv(data_file, on_bad_lines="skip", encoding="utf-8")
     else:
         d0, d1 = to_yyyymmdd(start_str), to_yyyymmdd(end_str)
-        if mkt == "hk":
-            raw = _safe_pro_call("hk_daily", ts_code=ts_code, start_date=d0, end_date=d1)
-        else:
-            raw = _safe_pro_call("daily", ts_code=ts_code, start_date=d0, end_date=d1)
+        raw = _safe_pro_call("daily", ts_code=ts_code, start_date=d0, end_date=d1)
         if raw is None or raw.empty:
-            raise TushareVendorError(f"Tushare {'hk_daily' if mkt == 'hk' else 'daily'} empty for {ts_code}.")
+            raise TushareVendorError(f"Tushare daily empty for {ts_code}.")
         raw = raw.sort_values("trade_date")
         data = raw.rename(
             columns={
@@ -389,48 +487,11 @@ def get_tushare_fundamentals(
     ticker: Annotated[str, "ticker symbol of the company"],
     curr_date: Annotated[str, "current date (YYYY-mm-dd) for look-ahead filter"] = None,
 ) -> str:
-    resolved = resolve_tushare_equity(ticker)
-    if not resolved:
+    ts_code = resolve_tushare_equity(ticker)
+    if not ts_code:
         raise TushareVendorError(
-            f"Tushare does not recognize '{ticker}' as A-share (6-digit) or Hong Kong (xxxxx.HK)."
+            f"Tushare does not recognize '{ticker}' as an A-share (6-digit .SH/.SZ/.BJ)."
         )
-    ts_code, mkt = resolved
-
-    if mkt == "hk":
-        basic = _try_pro_call("hk_basic", ts_code=ts_code, list_status="L")
-        if basic is None or basic.empty:
-            raise TushareVendorError("hk_basic returned no data for this HK ts_code.")
-        row = basic.iloc[0]
-        lines = [
-            f"Name: {row.get('name', '')}",
-            f"ts_code: {row.get('ts_code', '')}",
-            f"Full name: {row.get('fullname', '')}",
-            f"English name: {row.get('enname', '')}",
-            f"Market: {row.get('market', '')}",
-            f"List date: {row.get('list_date', '')}",
-            f"Currency: {row.get('curr_type', '')}",
-        ]
-        if curr_date:
-            end = to_yyyymmdd(curr_date)
-            try:
-                fi = _try_pro_call("hk_fina_indicator", ts_code=ts_code, end_date=end)
-                if fi is not None and not fi.empty:
-                    fi = fi.sort_values("end_date", ascending=False)
-                    fi = fi[
-                        pd.to_datetime(fi["end_date"], format="%Y%m%d", errors="coerce")
-                        <= pd.Timestamp(curr_date)
-                    ]
-                    if not fi.empty:
-                        r = fi.iloc[0]
-                        for col in fi.columns:
-                            val = r.get(col)
-                            if pd.notna(val) and col not in ("ts_code",):
-                                lines.append(f"{col}: {val}")
-            except TushareVendorError:
-                lines.append("(hk_fina_indicator unavailable — permission or points.)")
-        header = f"# Company fundamentals (Tushare HK: hk_basic / hk_fina_indicator) for {ts_code}\n"
-        header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        return header + "\n".join(str(x) for x in lines)
 
     basic = _safe_pro_call("stock_basic", ts_code=ts_code, list_status="L")
     if basic is None or basic.empty:
@@ -487,17 +548,9 @@ def get_tushare_balance_sheet(
     freq: Annotated[str, "frequency of data: 'annual' or 'quarterly'"] = "quarterly",
     curr_date: Annotated[str, "current date in YYYY-MM-DD format"] = None,
 ) -> str:
-    resolved = resolve_tushare_equity(ticker)
-    if not resolved:
+    ts_code = resolve_tushare_equity(ticker)
+    if not ts_code:
         return f"No balance sheet: unknown symbol '{ticker}'"
-    ts_code, mkt = resolved
-    if mkt == "hk":
-        df = _try_pro_call("hk_balancesheet", ts_code=ts_code)
-        if df is None or df.empty:
-            return f"No HK balance sheet data for '{ticker}' ({ts_code})."
-        df = _filter_stmt_by_curr_date(df, curr_date)
-        return _df_to_csv_header(f"HK balance sheet (hk_balancesheet, {freq})", ts_code, df.to_csv(index=False))
-
     df = _safe_pro_call("balancesheet", ts_code=ts_code)
     if df is None or df.empty:
         return f"No balance sheet data found for symbol '{ticker}'"
@@ -511,17 +564,9 @@ def get_tushare_cashflow(
     freq: Annotated[str, "frequency of data: 'annual' or 'quarterly'"] = "quarterly",
     curr_date: Annotated[str, "current date in YYYY-MM-DD format"] = None,
 ) -> str:
-    resolved = resolve_tushare_equity(ticker)
-    if not resolved:
+    ts_code = resolve_tushare_equity(ticker)
+    if not ts_code:
         return f"No cash flow: unknown symbol '{ticker}'"
-    ts_code, mkt = resolved
-    if mkt == "hk":
-        df = _try_pro_call("hk_cashflow", ts_code=ts_code)
-        if df is None or df.empty:
-            return f"No HK cash flow data for '{ticker}' ({ts_code})."
-        df = _filter_stmt_by_curr_date(df, curr_date)
-        return _df_to_csv_header(f"HK cash flow (hk_cashflow, {freq})", ts_code, df.to_csv(index=False))
-
     df = _safe_pro_call("cashflow", ts_code=ts_code)
     if df is None or df.empty:
         return f"No cash flow data found for symbol '{ticker}'"
@@ -535,17 +580,9 @@ def get_tushare_income_statement(
     freq: Annotated[str, "frequency of data: 'annual' or 'quarterly'"] = "quarterly",
     curr_date: Annotated[str, "current date in YYYY-MM-DD format"] = None,
 ) -> str:
-    resolved = resolve_tushare_equity(ticker)
-    if not resolved:
+    ts_code = resolve_tushare_equity(ticker)
+    if not ts_code:
         return f"No income statement: unknown symbol '{ticker}'"
-    ts_code, mkt = resolved
-    if mkt == "hk":
-        df = _try_pro_call("hk_income", ts_code=ts_code)
-        if df is None or df.empty:
-            return f"No HK income statement for '{ticker}' ({ts_code})."
-        df = _filter_stmt_by_curr_date(df, curr_date)
-        return _df_to_csv_header(f"HK income statement (hk_income, {freq})", ts_code, df.to_csv(index=False))
-
     df = _safe_pro_call("income", ts_code=ts_code)
     if df is None or df.empty:
         return f"No income statement data found for symbol '{ticker}'"
@@ -567,130 +604,17 @@ def _macro_market_keywords() -> tuple[str, ...]:
     )
 
 
-def _dedupe_keywords(keys: list[str], *, min_len: int = 2) -> list[str]:
-    """Deduplicate case-insensitively, preserve order, drop blanks / too-short tokens."""
-    seen: set[str] = set()
-    out: list[str] = []
-    for raw in keys:
-        s = str(raw or "").strip()
-        if len(s) < min_len:
-            continue
-        k = s.casefold()
-        if k in seen:
-            continue
-        seen.add(k)
-        out.append(s)
-    return out
-
-
-def _get_tushare_hk_news(ticker: str, ts_code: str, start_date: str, end_date: str) -> str:
-    """港股语料：无沪深 e互动。
-
-    参考 Tushare 技能《港股基础信息》：``hk_basic`` 输出含 ``name``、``fullname``、``enname``、
-    ``cn_spell``、``market``（市场类别）、``isin`` 等。长篇/短讯逻辑对齐 A 股：
-    **代码/ts_code/多语言名称** 命中，或 **``market``** 命中（类似 A 股用 ``industry`` 扩行业稿；
-    同板块其他公司亦可能出现，请以代码/简称为准）。
-    """
-    win_start = f"{start_date} 00:00:00"
-    win_end = f"{end_date} 23:59:59"
-    ph = "（本期无返回数据、或接口权限/参数不支持。）"
-
-    hk_core = ts_code.replace(".HK", "")
-    news_keys: list[str] = [ts_code]
-    if hk_core.isdigit():
-        news_keys.append(str(int(hk_core)))
-        news_keys.append(f"{int(hk_core):05d}")
-
-    stock_name = ""
-    hk_market = ""
-    basic = _try_pro_call(
-        "hk_basic",
-        ts_code=ts_code,
-        list_status="L",
-        fields="ts_code,name,fullname,enname,cn_spell,market,isin,curr_type",
-    )
-    if basic is None or basic.empty:
-        basic = _try_pro_call("hk_basic", ts_code=ts_code, list_status="L")
-    if basic is not None and not basic.empty:
-        row = basic.iloc[0]
-        stock_name = str(row.get("name") or "").strip()
-        if stock_name:
-            news_keys.append(stock_name)
-        for col in ("fullname", "enname", "cn_spell"):
-            v = str(row.get(col) or "").strip()
-            if v:
-                news_keys.append(v)
-        isin = str(row.get("isin") or "").strip()
-        if len(isin) >= 6:
-            news_keys.append(isin)
-        hk_market = str(row.get("market") or "").strip()
-
-    news_keys = _dedupe_keywords(news_keys, min_len=2)
-
-    def match_company_or_hk_board(title: str, content: str) -> bool:
-        blob = f"{title} {content}"
-        if any(k and k in blob for k in news_keys):
-            return True
-        if hk_market and len(hk_market) >= 2 and hk_market in blob:
-            return True
-        return False
-
-    major_srcs = ("新浪财经", "财联社", "第一财经", "华尔街见闻", "中证网", "同花顺")
-    flash_srcs = ("sina", "eastmoney", "10jqka", "cls", "yicai", "fenghuang", "jinrongjie", "wallstreetcn")
-
-    irm_ph = (
-        "（港股无沪深 **irm_qa_sh / irm_qa_sz**；公司互动与公告请结合港交所披露及下列中文财经语料。）"
-    )
-
-    npr_hint = (
-        "> **说明**：`npr` 为**国家政策法规库**（部委公开文件），不是证券「个股新闻」检索；"
-        "下列为时间窗内政策摘要，用作**宏观与监管背景**。\n\n"
-    )
-    npr_kw: list[str] = [hk_market] if hk_market and len(hk_market) >= 2 else []
-    sec3 = _npr_policy_lines(win_start, win_end, npr_kw, max_rows=28)
-
-    sec4 = _major_news_lines(win_start, win_end, match_company_or_hk_board, major_srcs, per_src_cap=12)
-    sec5 = _flash_news_lines(win_start, win_end, match_company_or_hk_board, flash_srcs, per_src_cap=15)
-
-    news_hdr = (
-        f"窗口: {start_date} ~ {end_date} | ④⑤ 匹配（港股 ``hk_basic``）：**{', '.join(news_keys)}**"
-        + (
-            f" 或 **市场类别「{hk_market}」**（同市场其他标的稿件也可能命中，请以 ts_code/简称为准）"
-            if hk_market
-            else ""
-        )
-    )
-    blocks = [
-        f"## Tushare 大模型语料（港股 + 共用语料）— {ticker} / {ts_code}\n\n{news_hdr}",
-        f"### ① 互动问答 · 上证e互动（irm_qa_sh）\n\n{irm_ph}",
-        f"### ② 互动问答 · 深证互动易（irm_qa_sz）\n\n{irm_ph}",
-        f"### ③ 国家政策库（npr）\n\n{npr_hint}"
-        + ("\n".join(sec3) if sec3 else ph),
-        f"### ④ 新闻快讯 · 长篇通讯（major_news）\n\n"
-        + ("\n".join(sec4) if sec4 else ph),
-        f"### ⑤ 新闻快讯 · 短讯（news）\n\n"
-        + ("\n".join(sec5) if sec5 else ph),
-    ]
-    if not (sec3 or sec4 or sec5):
-        blocks.append(
-            "\n---\n**说明**：港股语料依赖 **hk_basic** 与中文财经 ``major_news``/``news`` 权限；"
-            "若为空请检查 Tushare 港股与语料接口权限。"
-            f"（简称：{stock_name or '未取到'}；市场类别 market：{hk_market or '未取到'}）"
-        )
-    return "\n\n".join(blocks).strip()
-
-
 def get_tushare_news(
     ticker: str,
     start_date: str,
     end_date: str,
 ) -> str:
-    """五项大模型语料：A 股含沪深 e互动；港股无 e互动但共用 ``npr`` + ``major_news`` + ``news``。
+    """七项大模型语料：沪深 e互动、国家政策库、长篇/短讯新闻、公告与研报（均为 A 股 ``ts_code``）。
 
     - **国家政策库**为部委公开法规，**不是按代码的个股新闻**。
     - **长篇/短讯**命中规则：**证券代码、ts_code、证券简称**，以及 **`stock_basic` 行业名**（便于纳入行业动态；同行业其他公司稿件也可能命中，请以代码/简称为准）。
-    - **港股**无 ``stock_basic``：用 ``hk_basic`` 的 **``name`` / ``fullname`` / ``enname`` / ``cn_spell`` / ``isin``** 与 **``market``（市场类别，技能文档字段）** 对应 A 股的「简称 + 行业扩召回」；``npr`` 排序亦可用 ``market``。
-    - 无法识别为 A 股或港股 Tushare 代码时（如美股），仍返回 ``npr`` + 新闻降级结果。
+    - **⑥ 公告**：``anns_d`` 按 ``ts_code`` 与日期窗拉取；**⑦ 研报**：``research_report`` 个股研报 + 可选行业研报（``ind_name`` 与库内一致时才有行业命中）。
+    - 无法解析为 A 股代码时（如美股、港股代码），返回 ``npr`` + 新闻降级结果（无 e互动 / 公告 / 个股研报）。
     """
     win_start = f"{start_date} 00:00:00"
     win_end = f"{end_date} 23:59:59"
@@ -698,12 +622,9 @@ def get_tushare_news(
     ph = "（本期无返回数据、或接口权限/参数不支持。）"
     broad_kw = _macro_market_keywords()
 
-    resolved = resolve_tushare_equity(ticker)
-    if not resolved:
+    ts_code = resolve_tushare_equity(ticker)
+    if not ts_code:
         return _get_tushare_news_without_ts_code(ticker, start_date, end_date, win_start, win_end, broad_kw, ph)
-    ts_code, market = resolved
-    if market == "hk":
-        return _get_tushare_hk_news(ticker, ts_code, start_date, end_date)
 
     stock_name = ""
     industry = ""
@@ -743,13 +664,16 @@ def get_tushare_news(
     # 长篇/短讯：代码/简称 **或** 行业（无宏观、无「无条件要闻」降级，减少无关头条）。
     sec4 = _major_news_lines(win_start, win_end, match_company_or_industry, major_srcs, per_src_cap=12)
     sec5 = _flash_news_lines(win_start, win_end, match_company_or_industry, flash_srcs, per_src_cap=15)
+    sec6 = _anns_d_lines(ts_code, d0, d1)
+    sec7 = _research_report_lines(ts_code, industry, d0, d1)
 
     news_hdr = (
         f"窗口: {start_date} ~ {end_date} | ④⑤ 匹配：**{', '.join(news_keys)}**"
         + (f" 或 **行业「{industry}」**（行业稿可能含同行业其他公司，请以代码/简称为准）" if industry else "")
+        + " | ⑥⑦：**该股 ts_code** 的公告与研报（⑦ 另含与 ``stock_basic`` 行业名一致的 **行业研报** 抽样）"
     )
     blocks = [
-        f"## Tushare 大模型语料（五项）— {ticker} / {ts_code}\n\n{news_hdr}",
+        f"## Tushare 大模型语料（七项）— {ticker} / {ts_code}\n\n{news_hdr}",
         f"### ① 互动问答 · 上证e互动（irm_qa_sh）\n\n" + ("\n".join(sec1) if sec1 else ph),
         f"### ② 互动问答 · 深证互动易（irm_qa_sz）\n\n" + ("\n".join(sec2) if sec2 else ph),
         f"### ③ 国家政策库（npr）\n\n{npr_hint}"
@@ -758,12 +682,20 @@ def get_tushare_news(
         + ("\n".join(sec4) if sec4 else ph),
         f"### ⑤ 新闻快讯 · 短讯（news）\n\n"
         + ("\n".join(sec5) if sec5 else ph),
+        f"### ⑥ 上市公司公告（anns_d）\n\n" + ("\n".join(sec6) if sec6 else ph),
+        f"### ⑦ 券商研究报告（research_report）\n\n"
+        + (
+            "> **说明**：行业研报依赖 ``ind_name`` 与研报库内名称一致；若仅有个股研报无行业条属正常。\n\n"
+            if industry
+            else ""
+        )
+        + ("\n".join(sec7) if sec7 else ph),
     ]
-    if not (sec1 or sec2 or sec3 or sec4 or sec5):
+    if not (sec1 or sec2 or sec3 or sec4 or sec5 or sec6 or sec7):
         blocks.append(
             "\n---\n**说明**：多项为空时，常见原因包括：未开通大模型语料类接口权限（见 "
             "https://tushare.pro/document/1?doc_id=290 ）；该时段数据源无返回；"
-            "e互动仅覆盖上证/深证互动平台。"
+            "e互动仅覆盖上证/深证互动平台；``anns_d`` / ``research_report`` 需单独语料权限。"
             f"（公司简称：{stock_name or '未取到'}；行业：{industry or '未取到'}）"
         )
     return "\n\n".join(blocks).strip()
@@ -778,7 +710,7 @@ def _get_tushare_news_without_ts_code(
     broad_kw: tuple[str, ...],
     ph: str,
 ) -> str:
-    """美股等：无法解析为 A 股或港股 ``xxxxx.HK`` 时，仅 ``npr`` + 财经新闻语料。"""
+    """无法解析为 A 股 ``ts_code`` 时，仅 ``npr`` + 财经新闻语料；无代码则不调用公告/研报。"""
     raw = (ticker or "").strip()
     loose_kw = [x for x in (raw, raw.upper()) if x]
 
@@ -789,7 +721,7 @@ def _get_tushare_news_without_ts_code(
         return any(k in blob for k in broad_kw)
 
     npr_hint = (
-        "> **说明**：标的无法解析为 A 股或港股 Tushare 代码；**无 e互动**与 ``stock_basic``/``hk_basic``。"
+        "> **说明**：标的无法解析为 A 股 Tushare 代码；**无 e互动**与 ``stock_basic``。"
         "``npr`` 为国家政策库（非个股新闻）。\n\n"
     )
     sec3 = _npr_policy_lines(win_start, win_end, [], max_rows=25)
@@ -807,8 +739,8 @@ def _get_tushare_news_without_ts_code(
         )
 
     blocks = [
-        f"## Tushare 语料（未识别为 A/港）— `{ticker}`\n\n"
-        f"请输入 **6 位 A 股**（如 600519 / 600519.SH）或 **港股**（如 00700.HK、HK00700）。\n\n"
+        f"## Tushare 语料（未识别为 A 股）— `{ticker}`\n\n"
+        f"请输入 **6 位 A 股**代码（如 600519 / 600519.SH / 000001.SZ）。\n\n"
         f"窗口: {start_date} ~ {end_date}",
         f"### ①② 互动问答（irm_qa_sh / irm_qa_sz）\n\n"
         "（跳过：需要 A 股 ``ts_code``。）",
@@ -822,6 +754,10 @@ def _get_tushare_news_without_ts_code(
         )
         + ("\n".join(sec4) if sec4 else ph),
         f"### ⑤ 新闻快讯 · 短讯（news）\n\n" + ("\n".join(sec5) if sec5 else ph),
+        "### ⑥ 上市公司公告（anns_d）\n\n"
+        "（跳过：需要 A 股 ``ts_code``；请使用 ``get_tushare_news`` 并传入可解析代码。）",
+        "### ⑦ 券商研究报告（research_report）\n\n"
+        "（跳过：需要 ``ts_code``；全局宏观抽样见 ``get_tushare_global_news``。）",
     ]
     return "\n\n".join(blocks).strip()
 
@@ -831,9 +767,9 @@ def get_tushare_global_news(
     look_back_days: int = 7,
     limit: int = 50,
 ) -> str:
-    """全局语料：国家政策库 ``npr`` + 长篇 ``major_news`` + 短讯 ``news``。
+    """全局语料：国家政策库 ``npr`` + 长篇 ``major_news`` + 短讯 ``news`` + 研报抽样（``research_report``）。
 
-    互动问答接口需要 ``ts_code``，此处不调用；请对具体标的使用 ``get_tushare_news``。
+    互动问答、上市公司公告（``anns_d``）需 ``ts_code``，此处不调用；请对具体标的使用 ``get_tushare_news``。
     """
     curr = datetime.strptime(curr_date, "%Y-%m-%d")
     start = curr - timedelta(days=look_back_days)
@@ -841,6 +777,7 @@ def get_tushare_global_news(
     end_date = curr.strftime("%Y-%m-%d")
     win_start = f"{start_date} 00:00:00"
     win_end = f"{end_date} 23:59:59"
+    d0, d1 = to_yyyymmdd(start_date), to_yyyymmdd(end_date)
 
     broad_kw = _macro_market_keywords()
 
@@ -860,16 +797,22 @@ def get_tushare_global_news(
     sec_flash = _flash_news_lines(
         win_start, win_end, match_broad, flash_srcs, per_src_cap=per_flash
     )
+    sec_rr = _research_report_global_lines(
+        d0, d1, match_broad, max_rows=max(24, min(48, limit))
+    )
 
     ph = "（本期无返回数据或未命中宏观/市场类关键词。）"
+    ph_rr = "（本期无返回、或未命中宏观/市场类关键词、或 ``research_report`` 权限不足。）"
 
     blocks = [
-        f"## Tushare 全局语料（npr + major_news + news）\n\n{win_start} — {win_end}\n\n"
-        "> **说明**：本接口为**宏观与市场要闻**；`npr` 为政策法规库，**不是按股票代码的个股新闻**。\n",
+        f"## Tushare 全局语料（npr + major_news + news + research_report）\n\n{win_start} — {win_end}\n\n"
+        "> **说明**：本接口为**宏观与市场要闻**；`npr` 为政策法规库，**不是按股票代码的个股新闻**。"
+        "``anns_d`` 全量公告需标的代码，请用 ``get_tushare_news``。\n",
         f"### 国家政策库（npr）\n\n" + ("\n".join(sec_npr) if sec_npr else ph),
         f"### 新闻快讯 · 长篇通讯（major_news）\n\n" + ("\n".join(sec_major) if sec_major else ph),
         f"### 新闻快讯 · 短讯（news）\n\n" + ("\n".join(sec_flash) if sec_flash else ph),
-        "\n*互动问答（irm_qa_sh / irm_qa_sz）需具体标的，请使用 ``get_tushare_news``。*",
+        f"### 券商研究报告（research_report，宏观/行业关键词抽样）\n\n" + ("\n".join(sec_rr) if sec_rr else ph_rr),
+        "\n*互动问答（irm_qa_sh / irm_qa_sz）与 **上市公司公告（anns_d）** 需具体标的，请使用 ``get_tushare_news``。*",
     ]
     body = "\n\n".join(blocks).strip()
     if len(body) > 120_000:
@@ -878,15 +821,9 @@ def get_tushare_global_news(
 
 
 def get_tushare_insider_transactions(ticker: str) -> str:
-    resolved = resolve_tushare_equity(ticker)
-    if not resolved:
+    ts_code = resolve_tushare_equity(ticker)
+    if not ts_code:
         return f"No shareholder trade data: unknown symbol '{ticker}'."
-    ts_code, mkt = resolved
-    if mkt == "hk":
-        return (
-            f"No HK ``stk_holdertrade`` equivalent wired for '{ticker}' ({ts_code}). "
-            "Tushare ``stk_holdertrade`` is A-share oriented; use HKEX disclosures for substantial shareholders."
-        )
     df = _safe_pro_call("stk_holdertrade", ts_code=ts_code)
     if df is None or df.empty:
         return f"No shareholder trade data for '{ticker}' (Tushare stk_holdertrade)."
