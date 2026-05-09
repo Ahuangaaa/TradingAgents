@@ -16,7 +16,10 @@ from tradingagents.agents.utils.fundamental_data_tools import (
 from tradingagents.agents.utils.news_data_tools import (
     get_news,
     get_insider_transactions,
-    get_global_news
+    get_global_news,
+    get_holder_number,
+    get_stock_moneyflow,
+    get_margin_detail,
 )
 
 
@@ -24,8 +27,9 @@ def get_language_instruction() -> str:
     """Return a prompt instruction for the configured output language.
 
     Returns empty string when English (default), so no extra tokens are used.
-    Applied to analysts, trader, risk debators, and portfolio manager so saved
-    markdown matches the CLI ``output_language`` choice. (Structured enums such
+    Applied to analysts, bull/bear researchers, research manager, trader, risk
+    debators, and portfolio manager so saved markdown matches the CLI
+    ``output_language`` choice. (Structured enums such
     as Buy/Hold/Sell stay in English for schema compatibility.)
     """
     from tradingagents.dataflows.config import get_config

@@ -28,6 +28,8 @@ def create_news_analyst(llm):
 
         system_message = (
             "You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(ticker, start_date, end_date) for company-specific or targeted news searches, and get_global_news(curr_date, look_back_days, limit) for broader macroeconomic news. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
+            + " Prioritize material useful for deep fundamental analysis: main competitors and peer moves, regulatory/product/market oversight, management or board changes, alliances/JVs/M&A, capacity expansions or plant shutdowns, pricing power or demand shocks mentioned in coverage, litigation or penalties, labor or union developments, and tax or policy headlines affecting the company or its industry. When relevant, run additional targeted get_news queries with competitor tickers or sector/regulator keywords."
+            + " A downstream step will consolidate findings into a structured deep fundamental checklist—surface concrete facts and dates so they can be cited there."
             + ticker_guard
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
             + get_web_fetch_tool_hint()

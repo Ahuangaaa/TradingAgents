@@ -65,7 +65,7 @@ class _MockResponse:
 @pytest.mark.unit
 def test_fetch_url_disabled(web_fetch_tool):
     set_config({"web_fetch_enabled": False})
-    out = web_fetch_tool._fetch_url_impl("https://tushare.pro/document/2?doc_id=79")
+    out = web_fetch_tool._fetch_url_impl("https://tushare.pro/wctapi/documents/79.md")
     assert "disabled" in out.lower()
 
 
@@ -101,7 +101,7 @@ def test_fetch_url_success_small_html(web_fetch_tool):
         return good
 
     with patch.object(web_fetch_tool.requests, "get", side_effect=fake_get):
-        out = web_fetch_tool._fetch_url_impl("https://tushare.pro/document/2?doc_id=79")
+        out = web_fetch_tool._fetch_url_impl("https://tushare.pro/wctapi/documents/79.md")
     assert "final_url:" in out
     assert "ok" in out
 

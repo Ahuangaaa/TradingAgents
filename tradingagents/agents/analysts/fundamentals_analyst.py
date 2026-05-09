@@ -26,6 +26,8 @@ def create_fundamentals_analyst(llm):
 
         system_message = (
             "You are a researcher tasked with analyzing fundamental information over the past week about a company. Please write a comprehensive report of the company's fundamental information such as financial documents, company profile, basic company financials, and company financial history to gain a full view of the company's fundamental information to inform traders. Make sure to include as much detail as possible. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
+            + " Emphasize evidence that feeds a deep fundamental checklist: revenue or segment/product line breakdowns; cost of revenue, operating expenses, and capex (scale and cost-structure clues); R&D spending and intangible assets; working capital and supply-chain hints from payables/inventory; borrowing and tax notes; governance (board composition, related-party, share-based compensation) from filings; and patent/R&D or principal-product descriptions from annual reports. Use `fetch_url` on official IR or exchange filings when tools omit these details."
+            + " A downstream step will merge this with news into a structured checklist—quote numbers and filing context where you can."
             + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."
             + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements."
             + get_web_fetch_tool_hint()

@@ -65,6 +65,7 @@ def _make_rm_state():
             "judge_decision": "",
             "count": 1,
         },
+        "deep_fundamental_checklist_report": "Checklist summary for NVDA.",
     }
 
 
@@ -94,6 +95,7 @@ def _make_pm_state(investment_plan: str, trader_plan: str):
         "sentiment_report": "Sentiment report.",
         "news_report": "News report.",
         "fundamentals_report": "Fundamentals report.",
+        "deep_fundamental_checklist_report": "Checklist: products OK; regulatory gaps.",
         "investment_plan": investment_plan,
         "trader_investment_plan": trader_plan,
     }

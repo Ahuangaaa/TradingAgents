@@ -40,6 +40,9 @@ from tradingagents.agents.utils.agent_utils import (
     get_news,
     get_insider_transactions,
     get_global_news,
+    get_holder_number,
+    get_stock_moneyflow,
+    get_margin_detail,
 )
 from tradingagents.agents.utils.web_fetch_tool import fetch_url
 
@@ -186,8 +189,10 @@ class TradingAgentsGraph:
             ),
             "social": ToolNode(
                 [
-                    # News tools for social media analysis
                     get_news,
+                    get_holder_number,
+                    get_stock_moneyflow,
+                    get_margin_detail,
                     fetch_url,
                 ]
             ),
@@ -197,6 +202,9 @@ class TradingAgentsGraph:
                     get_news,
                     get_global_news,
                     get_insider_transactions,
+                    get_holder_number,
+                    get_stock_moneyflow,
+                    get_margin_detail,
                     fetch_url,
                 ]
             ),
@@ -383,6 +391,9 @@ class TradingAgentsGraph:
             "sentiment_report": final_state["sentiment_report"],
             "news_report": final_state["news_report"],
             "fundamentals_report": final_state["fundamentals_report"],
+            "deep_fundamental_checklist_report": final_state.get(
+                "deep_fundamental_checklist_report", ""
+            ),
             "investment_debate_state": {
                 "bull_history": final_state["investment_debate_state"]["bull_history"],
                 "bear_history": final_state["investment_debate_state"]["bear_history"],

@@ -78,6 +78,7 @@ def _make_pm_state(past_context=""):
         "sentiment_report": "Sentiment report.",
         "news_report": "News report.",
         "fundamentals_report": "Fundamentals report.",
+        "deep_fundamental_checklist_report": "",
         "investment_plan": "Research plan.",
         "trader_investment_plan": "Trader plan.",
     }
@@ -590,6 +591,7 @@ class TestPortfolioManagerInjection:
         propagator = Propagator()
         state = propagator.create_initial_state("NVDA", "2026-01-10")
         assert state["past_context"] == ""
+        assert state.get("deep_fundamental_checklist_report") == ""
 
     # PM prompt
 
@@ -743,6 +745,7 @@ class TestLegacyRemoval:
             "sentiment_report": "",
             "news_report": "",
             "fundamentals_report": "",
+            "deep_fundamental_checklist_report": "",
             "investment_debate_state": {
                 "bull_history": "", "bear_history": "", "history": "",
                 "current_response": "", "judge_decision": "",

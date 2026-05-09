@@ -50,7 +50,7 @@ def _sse_trading_days_between_inclusive(lo_yyyy_mm_dd: str, hi_yyyy_mm_dd: str) 
     """Return open trading dates in ``[lo, hi]`` (YYYY-MM-DD), ascending.
 
     Uses Tushare ``trade_cal`` for ``SSE`` (same session calendar as SZSE/BJ
-    for routine A-share daily bars). See https://tushare.pro/document/2?doc_id=26
+    for routine A-share daily bars). See https://tushare.pro/wctapi/documents/26.md
     """
     d0, d1 = to_yyyymmdd(lo_yyyy_mm_dd), to_yyyymmdd(hi_yyyy_mm_dd)
     df = _try_pro_call(
@@ -782,7 +782,7 @@ def get_tushare_news(
     if not (sec1 or sec2 or sec3 or sec4 or sec5 or sec6 or sec7):
         blocks.append(
             "\n---\n**说明**：多项为空时，常见原因包括：未开通大模型语料类接口权限（见 "
-            "https://tushare.pro/document/1?doc_id=290 ）；该时段数据源无返回；"
+            "https://tushare.pro/wctapi/documents/290.md ）；该时段数据源无返回；"
             "e互动仅覆盖上证/深证互动平台；``anns_d`` / ``research_report`` 需单独语料权限。"
             f"（公司简称：{stock_name or '未取到'}；行业：{industry or '未取到'}）"
         )
@@ -916,3 +916,71 @@ def get_tushare_insider_transactions(ticker: str) -> str:
     if df is None or df.empty:
         return f"No shareholder trade data for '{ticker}' (Tushare stk_holdertrade)."
     return _df_to_csv_header("Shareholder increase/decrease (stk_holdertrade)", ts_code, df.to_csv(index=False))
+
+
+def get_tushare_holder_number(ticker: str, start_date: str, end_date: str) -> str:
+    """Shareholder count (户数) by announcement window — ``stk_holdernumber``."""
+    ts_code = resolve_tushare_equity(ticker)
+    if not ts_code:
+        return f"No holder-number data: unknown symbol '{ticker}'."
+    d0, d1 = to_yyyymmdd(start_date), to_yyyymmdd(end_date)
+    df = _try_pro_call("stk_holdernumber", ts_code=ts_code, start_date=d0, end_date=d1)
+    if df is None or df.empty:
+        return (
+            f"No shareholder count data for '{ticker}' (Tushare stk_holdernumber). "
+            "May need higher Tushare points or a wider ann_date range; see https://tushare.pro/wctapi/documents/166.md"
+        )
+    if "ann_date" in df.columns:
+        df = df.sort_values("ann_date", ascending=False, ignore_index=True)
+    body = df.to_csv(index=False)
+    if len(body) > 200_000:
+        body = body[:200_000] + "\n…（输出已截断）"
+    return _df_to_csv_header("Shareholder count / holder_num (stk_holdernumber)", ts_code, body)
+
+
+def get_tushare_stock_moneyflow(ticker: str, start_date: str, end_date: str) -> str:
+    """Per-stock money flow — large / extra-large orders via ``moneyflow``."""
+    ts_code = resolve_tushare_equity(ticker)
+    if not ts_code:
+        return f"No moneyflow data: unknown symbol '{ticker}'."
+    d0, d1 = to_yyyymmdd(start_date), to_yyyymmdd(end_date)
+    df = _try_pro_call("moneyflow", ts_code=ts_code, start_date=d0, end_date=d1)
+    if df is None or df.empty:
+        return (
+            f"No moneyflow data for '{ticker}' (Tushare moneyflow; requires ~2000+积分). "
+            "See https://tushare.pro/wctapi/documents/170.md"
+        )
+    if "trade_date" in df.columns:
+        df = df.sort_values("trade_date", ascending=False, ignore_index=True)
+    body = df.to_csv(index=False)
+    if len(body) > 200_000:
+        body = body[:200_000] + "\n…（输出已截断）"
+    return _df_to_csv_header(
+        "Stock moneyflow: small/medium/large/extra-large (moneyflow)",
+        ts_code,
+        body,
+    )
+
+
+def get_tushare_margin_detail(ticker: str, start_date: str, end_date: str) -> str:
+    """Margin trading detail — ``margin_detail`` (rzye 融资余额, rzmre 融资买入, etc.)."""
+    ts_code = resolve_tushare_equity(ticker)
+    if not ts_code:
+        return f"No margin detail: unknown symbol '{ticker}'."
+    d0, d1 = to_yyyymmdd(start_date), to_yyyymmdd(end_date)
+    df = _try_pro_call("margin_detail", ts_code=ts_code, start_date=d0, end_date=d1)
+    if df is None or df.empty:
+        return (
+            f"No margin detail for '{ticker}' (Tushare margin_detail). "
+            "See https://tushare.pro/wctapi/documents/59.md"
+        )
+    if "trade_date" in df.columns:
+        df = df.sort_values("trade_date", ascending=False, ignore_index=True)
+    body = df.to_csv(index=False)
+    if len(body) > 200_000:
+        body = body[:200_000] + "\n…（输出已截断）"
+    return _df_to_csv_header(
+        "Margin trading detail: rzye / rzmre / rzche (margin_detail)",
+        ts_code,
+        body,
+    )

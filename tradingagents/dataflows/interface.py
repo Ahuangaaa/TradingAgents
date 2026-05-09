@@ -8,6 +8,9 @@ from .tushare_data import (
     get_tushare_news,
     get_tushare_global_news,
     get_tushare_insider_transactions,
+    get_tushare_holder_number,
+    get_tushare_stock_moneyflow,
+    get_tushare_margin_detail,
 )
 from .config import get_config
 
@@ -35,11 +38,14 @@ TOOLS_CATEGORIES = {
         ]
     },
     "news_data": {
-        "description": "News and insider data",
+        "description": "News, insider data, and sentiment-oriented market microstructure",
         "tools": [
             "get_news",
             "get_global_news",
             "get_insider_transactions",
+            "get_holder_number",
+            "get_stock_moneyflow",
+            "get_margin_detail",
         ]
     }
 }
@@ -76,6 +82,15 @@ VENDOR_METHODS = {
     },
     "get_insider_transactions": {
         "tushare": get_tushare_insider_transactions,
+    },
+    "get_holder_number": {
+        "tushare": get_tushare_holder_number,
+    },
+    "get_stock_moneyflow": {
+        "tushare": get_tushare_stock_moneyflow,
+    },
+    "get_margin_detail": {
+        "tushare": get_tushare_margin_detail,
     },
 }
 

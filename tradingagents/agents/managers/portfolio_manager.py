@@ -31,6 +31,7 @@ def create_portfolio_manager(llm):
         risk_debate_state = state["risk_debate_state"]
         research_plan = state["investment_plan"]
         trader_plan = state["trader_investment_plan"]
+        deep_checklist = state.get("deep_fundamental_checklist_report", "")
 
         past_context = state.get("past_context", "")
         lessons_line = (
@@ -55,6 +56,7 @@ def create_portfolio_manager(llm):
 **Context:**
 - Research Manager's investment plan: **{research_plan}**
 - Trader's transaction proposal: **{trader_plan}**
+- Deep fundamental checklist (if your rating conflicts with its main conclusions, explain why in the thesis): **{deep_checklist}**
 {lessons_line}
 **Risk Analysts Debate History:**
 {history}

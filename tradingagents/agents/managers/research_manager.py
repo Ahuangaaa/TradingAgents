@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from tradingagents.agents.schemas import ResearchPlan, render_research_plan
-from tradingagents.agents.utils.agent_utils import build_instrument_context
+from tradingagents.agents.utils.agent_utils import (
+    build_instrument_context,
+    get_language_instruction,
+)
 from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
@@ -18,6 +21,7 @@ def create_research_manager(llm):
         history = state["investment_debate_state"].get("history", "")
 
         investment_debate_state = state["investment_debate_state"]
+        deep_checklist = state.get("deep_fundamental_checklist_report", "")
 
         prompt = f"""As the Research Manager and debate facilitator, your role is to critically evaluate this round of debate and deliver a clear, actionable investment plan for the trader.
 
@@ -36,8 +40,13 @@ Commit to a clear stance whenever the debate's strongest arguments warrant one; 
 
 ---
 
+**Deep fundamental checklist (structured; align your thesis and risks with it, including explicit "information insufficient" items):**
+{deep_checklist}
+
+---
+
 **Debate History:**
-{history}"""
+{history}{get_language_instruction()}"""
 
         investment_plan = invoke_structured_or_freetext(
             structured_llm,
