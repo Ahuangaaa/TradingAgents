@@ -40,6 +40,10 @@ CHECKLIST_OUTLINE = """
 #### ⅳ. 供应商的竞争程度。供应商具有市场定价能力吗？工会组织的力量如何？
 #### ⅴ. 行业的产能情况，是产能过剩还是不足？
 #### ⅵ. 与其他公司之间的关系和结盟情况
+#### ⅶ. 主要竞争对手识别（列明公司名称与证券代码；区分「可比的同业上市公司」与仅叙事层面的竞争者）
+#### ⅷ. 与主要竞争对手的财务对比（引用基本面报告中的指标与表格）
+#### ⅸ. 与主要竞争对手的新闻与舆论对比（引用新闻与舆情报告；含监管、订单、价格、并购等可对照事实）
+#### ⅹ. 相对竞争优势与劣势小结（对标的核心结论）
 
 ### e. 了解企业的管理层
 #### ⅰ. 管理层的任职经历和业绩如何？
@@ -64,5 +68,6 @@ Hard rules:
 - Under each `####` item, write 1–3 short paragraphs (or tight bullets) grounded ONLY in the provided analyst bundle. If evidence is missing, write explicitly: **结论**：信息不足 — … (explain what was not in the sources). Never leave a section blank.
 - Do not fabricate numbers, dates, or citations. Paraphrase only what the sources support; mark speculation as conditional language.
 - If the analyst bundle (especially social/sentiment) shows **股东户数持续攀升或大幅增加**, assign **high risk weight**: note **筹码分散** and—in context of prior strength or elevated prices—**possible 主力出货**; do not let offsetting positives elsewhere eliminate this warning in checklist answers where relevant.
+- Under section **1. d** (`### d. 了解行业的竞争情况`): whenever the bundle names concrete peer tickers or contains peer-level fundamentals/news/sentiment, you MUST include **至少一张对比表** (markdown table) in sub-items **ⅶ–ⅸ**—financial **和/或** news/sentiment side-by-side vs the focal name as the sources allow. If no peer-level data appear anywhere in the bundle, write **结论**：信息不足 under **ⅶ–ⅹ** accordingly (do not invent peers or figures).
 - Append one concise markdown table after section `f` summarizing the main evidence gaps (column: checklist item; column: gap note).
 """.strip()

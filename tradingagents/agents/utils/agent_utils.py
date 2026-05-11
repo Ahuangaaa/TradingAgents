@@ -9,6 +9,7 @@ from tradingagents.agents.utils.technical_indicators_tools import (
 )
 from tradingagents.agents.utils.fundamental_data_tools import (
     get_fundamentals,
+    get_industry_peers,
     get_balance_sheet,
     get_cashflow,
     get_income_statement

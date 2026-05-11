@@ -32,6 +32,12 @@ dependencies = [
     "tushare>=1.4.0",
 ]
 
+[project.optional-dependencies]
+qdrant-news = [
+    "qdrant-client>=1.12.0",
+    "sentence-transformers>=3.1.0",
+]
+
 [project.scripts]
 tradingagents = "cli.main:app"
 

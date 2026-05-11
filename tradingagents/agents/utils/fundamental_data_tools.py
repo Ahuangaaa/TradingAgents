@@ -26,6 +26,25 @@ def get_fundamentals(
 
 
 @tool
+def get_industry_peers(
+    ticker: Annotated[str, "focal ticker symbol (same as company_of_interest)"],
+    curr_date: Annotated[
+        str | None,
+        "YYYY-mm-dd analysis or trade date; used to sort peers by total_mv when daily_basic is available.",
+    ] = None,
+    max_peers: Annotated[int, "max peer rows to return (default 8)"] = 8,
+) -> str:
+    """
+    List same-industry listed A-share peers from Tushare ``stock_basic`` (focal excluded).
+
+    Call **before** deep `get_news` or `get_fundamentals` on competitors so tickers are explicit.
+
+    Official docs: stock_basic — https://tushare.pro/wctapi/documents/25.md
+    """
+    return route_to_vendor("get_industry_peers", ticker, curr_date, max_peers)
+
+
+@tool
 def get_balance_sheet(
     ticker: Annotated[str, "ticker symbol"],
     freq: Annotated[str, "reporting frequency: annual/quarterly"] = "quarterly",

@@ -12,6 +12,10 @@ def get_news(
     Retrieve news and related corpus for a given ticker symbol.
     Uses the configured news_data vendor. One response may concatenate multiple Tushare APIs
     (e.g. interactive Q&A, policy, long-form news, flash news, announcements, research reports).
+    When ``news_long_short_use_qdrant`` is true (or env ``NEWS_LONG_SHORT_USE_QDRANT=1``), sections ④⑤
+    (``major_news`` / flash ``news``) are sourced from a **Qdrant** vector collection instead of live
+    Tushare pulls; **section ⑧** adds a **separate** macro-only vector query (and optional LLM summary),
+    not mixed with ④⑤. Install ``.[qdrant-news]`` and run the ingest pipeline under ``qdrant/`` first.
 
     Official Tushare API docs (use ``fetch_url`` on tushare.pro to align field meanings per section):
     npr — https://tushare.pro/wctapi/documents/406.md
@@ -40,6 +44,8 @@ def get_global_news(
     """
     Retrieve global macro-oriented news corpus (no ticker-scoped interactive Q&A or ``anns_d`` in this path).
     Uses the configured news_data vendor. Output may combine ``npr``, ``major_news``, ``news``, and ``research_report``.
+    When ``news_long_short_use_qdrant`` is enabled, the long-form / flash blocks are filled from **Qdrant**;
+    **section ⑧** uses a **dedicated macro retrieval query** (and optional LLM), separate from ④⑤ (see ``get_news`` tool notes).
 
     Official Tushare API docs (use ``fetch_url`` on tushare.pro to align field meanings):
     npr — https://tushare.pro/wctapi/documents/406.md

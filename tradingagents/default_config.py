@@ -40,7 +40,9 @@ DEFAULT_CONFIG = {
     # Debate and discussion settings
     "max_debate_rounds": 1,
     "max_risk_discuss_rounds": 1,
-    "max_recur_limit": 100,
+    # LangGraph recursion_limit (each analyst↔tools step counts). Raise when many
+    # tool rounds (e.g. get_news per peer + get_industry_peers + fundamentals).
+    "max_recur_limit": 400,
     # Data vendor configuration (Tushare Pro only)
     "data_vendors": {
         "core_stock_apis": "tushare",
@@ -57,4 +59,30 @@ DEFAULT_CONFIG = {
     "web_fetch_allowed_hosts": ["tushare.pro", "www.tushare.pro"],
     "web_fetch_max_bytes": 524288,
     "web_fetch_timeout_sec": 20,
+    # ④⑤ major_news / news: LLM semantic filter (replaces industry substring match)
+    "news_llm_filter_long_short": True,
+    "news_llm_filter_use_cache": True,
+    "news_llm_filter_batch_size": 28,
+    "news_llm_filter_max_kept": 45,
+    "news_llm_peer_context_max": 5,
+    "news_long_short_lookback_days": 30,
+    "news_raw_major_per_src": 12,
+    "news_raw_flash_per_src": 14,
+    "news_raw_major_content_max": 2000,
+    "news_raw_flash_content_max": 1200,
+    # ④⑤ from Qdrant (not Tushare major_news/news) when True or NEWS_LONG_SHORT_USE_QDRANT=1
+    "news_long_short_use_qdrant": True,
+    "news_qdrant_search_limit": 120,
+    "news_qdrant_filter_by_ticker": False,
+    # ⑧ 宏观向量专题（专用检索词 + 可选 LLM；与 ④⑤ query 分离）
+    "news_macro_section8_enabled": True,
+    "news_macro_section8_search_limit": 100,
+    "news_macro_section8_per_major": 10,
+    "news_macro_section8_per_flash": 12,
+    "news_macro_section8_major_content_max": 2200,
+    "news_macro_section8_flash_content_max": 1500,
+    "news_macro_section8_llm_refine": True,
+    "news_macro_section8_llm_max_chars": 24000,
+    "news_macro_section8_raw_max_chars": 12000,
+    "news_macro_section8_include_raw_excerpt": True,
 }

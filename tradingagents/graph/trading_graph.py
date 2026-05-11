@@ -34,6 +34,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_stock_data,
     get_indicators,
     get_fundamentals,
+    get_industry_peers,
     get_balance_sheet,
     get_cashflow,
     get_income_statement,
@@ -125,7 +126,9 @@ class TradingAgentsGraph:
             self.conditional_logic,
         )
 
-        self.propagator = Propagator()
+        self.propagator = Propagator(
+            max_recur_limit=int(self.config.get("max_recur_limit", 250)),
+        )
         self.reflector = Reflector(self.quick_thinking_llm)
         self.signal_processor = SignalProcessor(self.quick_thinking_llm)
 
@@ -189,6 +192,7 @@ class TradingAgentsGraph:
             ),
             "social": ToolNode(
                 [
+                    get_industry_peers,
                     get_news,
                     get_holder_number,
                     get_stock_moneyflow,
@@ -199,6 +203,7 @@ class TradingAgentsGraph:
             "news": ToolNode(
                 [
                     # News and insider information
+                    get_industry_peers,
                     get_news,
                     get_global_news,
                     get_insider_transactions,
@@ -211,6 +216,7 @@ class TradingAgentsGraph:
             "fundamentals": ToolNode(
                 [
                     # Fundamental analysis tools
+                    get_industry_peers,
                     get_fundamentals,
                     get_balance_sheet,
                     get_cashflow,

@@ -1,6 +1,7 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
+    get_industry_peers,
     get_language_instruction,
     get_web_fetch_tool_hint,
 )
@@ -20,6 +21,7 @@ def create_social_media_analyst(llm):
         instrument_context = build_instrument_context(company)
 
         tools = [
+            get_industry_peers,
             get_news,
             get_holder_number,
             get_stock_moneyflow,
@@ -35,7 +37,9 @@ def create_social_media_analyst(llm):
         )
 
         system_message = (
-            "You are a social media and company specific news researcher/analyst tasked with analyzing social media posts, recent company news, and public sentiment for a specific company over the past week. You will be given a company's name your objective is to write a comprehensive long report detailing your analysis, insights, and implications for traders and investors on this company's current state after looking at social media and what people are saying about that company, analyzing sentiment data of what people feel each day about the company, and looking at recent company news. Use the get_news(ticker, start_date, end_date) tool to search for company-specific news and social media discussions. Try to look at all sources possible from social media to sentiment to news. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
+            "You are a social media and company specific news researcher/analyst tasked with analyzing social media posts, recent company news, and public sentiment for a specific company over the past week. You will be given a company's name your objective is to write a comprehensive long report detailing your analysis, insights, and implications for traders and investors on this company's current state after looking at social media and what people are saying about that company, analyzing sentiment data of what people feel each day about the company, and looking at recent company news. "
+            + " Call `get_industry_peers(ticker, curr_date)` **first** with the focal ticker and **curr_date = current analysis date**; pick **at most 1–2** closest peer tickers for supplementary `get_news` only (互动易/短讯舆论角度；**不要**对多家竞品重复调用 `get_holder_number` / `get_stock_moneyflow` / `get_margin_detail`，以免工具爆炸). Briefly relate peer tone vs focal when those pulls add something the News analyst may not emphasize."
+            + " Use the get_news(ticker, start_date, end_date) tool to search for company-specific news and social media discussions (tool output includes **LLM-screened** long/flash news blocks ④⑤—use relevance labels and excerpts). Try to look at all sources possible from social media to sentiment to news. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
             + " **Quantitative A-share positioning (Tushare — required for this report):** (1) Call `get_holder_number` with the same `ticker` and an announcement-date window wide enough for several disclosed points (typically `start_date` ~18–24 months before the analysis date through `end_date` = analysis/trade date) and explain **股东户数** changes (concentration vs dispersion). "
             + "**Shareholder-count risk weighting (mandatory):** If holder counts **rise across multiple consecutive disclosures** or jump **materially** vs the prior report, you MUST **upgrade the prominence of this signal**—it is a **dangerous / high-priority warning**, not a minor data point. In A-share narratives, **持续攀升或大幅增加的股东户数** often implies **筹码分散**; combined with prior strength or **高位/滞涨**, analysts frequently flag it as evidence **consistent with 主力出货（distributing into retail）**—not definitive alone, but you **must not soft-pedal** it when the trend is clear or the increase is large. Cross-check `get_stock_moneyflow` and `get_margin_detail`, but **benign moneyflow or margin does not cancel** a sustained, large rise in holder count—keep the **户数风险** visible in conclusions and in your closing table (e.g. risk tier or priority row). "
             + "(2) Call `get_stock_moneyflow` for recent trading days (e.g. last ~30–60 sessions ending on the analysis date) and interpret **大单/特大单** activity and **net_mf_amount** (large-capital flow). "

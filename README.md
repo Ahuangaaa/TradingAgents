@@ -119,6 +119,8 @@ Install the package and its dependencies:
 pip install .
 ```
 
+Optional **Qdrant-backed ④⑤ news** (long-form + flash) for `get_news` / `get_global_news`: ingest vectors with `qdrant/ingest_news.py` (see `qdrant/README.md`), then `pip install .[qdrant-news]`, set `QDRANT_URL` and `QDRANT_COLLECTION` (default `financial_news`), and enable `NEWS_LONG_SHORT_USE_QDRANT=1` or `news_long_short_use_qdrant` in config. Use the same `sentence_transformers` / Jina settings as ingest; queries use `retrieval.query` (`JINA_EMBED_QUERY_TASK`).
+
 ### Docker
 
 Alternatively, run with Docker:

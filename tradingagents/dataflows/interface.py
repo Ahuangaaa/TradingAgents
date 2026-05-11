@@ -2,6 +2,7 @@ from .tushare_data import (
     get_tushare_stock_data,
     get_tushare_indicators,
     get_tushare_fundamentals,
+    get_tushare_industry_peers,
     get_tushare_balance_sheet,
     get_tushare_cashflow,
     get_tushare_income_statement,
@@ -32,6 +33,7 @@ TOOLS_CATEGORIES = {
         "description": "Company fundamentals",
         "tools": [
             "get_fundamentals",
+            "get_industry_peers",
             "get_balance_sheet",
             "get_cashflow",
             "get_income_statement"
@@ -64,6 +66,9 @@ VENDOR_METHODS = {
     },
     "get_fundamentals": {
         "tushare": get_tushare_fundamentals,
+    },
+    "get_industry_peers": {
+        "tushare": get_tushare_industry_peers,
     },
     "get_balance_sheet": {
         "tushare": get_tushare_balance_sheet,
