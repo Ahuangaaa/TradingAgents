@@ -51,19 +51,19 @@ python qdrant\test.py
 flowchart LR
   Tushare[Tushare_fetch]
   DeepSeekTag[DeepSeek_chat]
-  JinaEmbed[Jina_ST_embed]
+  DashEmbed[DashScope_embed_v4]
   Qdrant[Qdrant_upsert]
-  Tushare --> DeepSeekTag --> JinaEmbed --> Qdrant
+  Tushare --> DeepSeekTag --> DashEmbed --> Qdrant
 ```
 
 1. **Tushare**：多源 `news` / `major_news`，去重，`stable_id`（见 `news_fetch.py`）。  
 2. **DeepSeek**：OpenAI 兼容 `POST .../chat/completions`，批量 JSON 抽取 `tickers` / `industry_tags` / `concept_tags`（见 `news_llm_tags.py`）。  
-3. **向量（默认）**：本机 **sentence-transformers** + **`jinaai/jina-embeddings-v3`**，对标题+正文片段做 `encode`（见 `news_embed.py`）。  
+3. **向量**：阿里云 **DashScope** **`text-embedding-v4`**（线上），对标题+正文片段调用 `TextEmbedding.call`；单次最多 **10** 条文本，脚本内自动分批（见 `news_embed.py`）。**无需**本机 PyTorch / sentence-transformers。  
 4. **Qdrant**：建集合与 payload 索引、每批 upsert、可选按 `pub_ts` 删除早于 30 天的点。
 
 默认集合名 **`financial_news`**（与 `test.py` 的 `news_collection` 分离，避免误删测试数据）。可通过 `QDRANT_COLLECTION` 覆盖。
 
-**迁移提示**：若已有集合用其它嵌入模型/维度建过，换 Jina 后向量维度可能不一致，需**新 collection** 或清空重建。Jina v3 约 570M 参数，首次运行会从 Hugging Face 拉权重，并依赖 PyTorch 等，请预留磁盘与内存。
+**迁移提示**：若集合曾用其它模型/维度建过，更换 `text-embedding-v4` 的 **`dimension`**（见 `EMBEDDING_DIMENSIONS`）后向量维可能不一致，需**新 collection** 或清空重建。入库与 TradingAgents 检索必须使用 **同一模型与维度**。
 
 ### 依赖
 
@@ -71,7 +71,7 @@ flowchart LR
 pip install -r qdrant/requirements-ingest.txt
 ```
 
-项目根目录已含 `pandas` / `tushare` 时，本文件补 **qdrant-client**、**httpx**、**sentence-transformers**（默认嵌入路径）。
+项目根目录已含 `pandas` / `tushare` 时，本文件补 **qdrant-client**、**httpx**、**dashscope**（DashScope 嵌入 SDK）。
 
 ### 环境变量一览
 
@@ -92,27 +92,25 @@ pip install -r qdrant/requirements-ingest.txt
 | `NEWS_TAG_LLM_API_KEY` | 优先；否则读 `DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY` |
 | `NEWS_TAG_LLM_MODEL` | 默认 `deepseek-chat` |
 
-**向量（默认：本机 Jina v3）**
+**向量（DashScope `text-embedding-v4`，线上）**
 
 | 变量 | 说明 |
 |------|------|
-| `NEWS_EMBED_BACKEND` | 默认 **`sentence_transformers`**（或 `st`）；设为 **`openai`** 时走下方「可选 HTTP 嵌入」 |
-| `SENTENCE_TRANSFORMERS_MODEL` | 默认 **`jinaai/jina-embeddings-v3`** |
-| `JINA_EMBED_TASK` | 仅 Jina v3：传给 `encode` 的 `task` / `prompt_name`，默认 **`retrieval.passage`**（入库文档向量；若改 Matryoshka `truncate_dim` 需与集合维度一致） |
-| `JINA_EMBED_QUERY_TASK` | 仅 Jina v3：TradingAgents 从 Qdrant 检索 ④⑤ 时 `embed_query_texts` 使用，默认 **`retrieval.query`**（与 passage 向量做不对称检索） |
-| `EMBEDDING_DIMENSIONS` / `NEWS_EMBED_DIM` | 占位默认 **`1024`**（与 Jina v3 默认输出一致）；若 `encode(..., truncate_dim=…)` 等则须与 Qdrant 集合维度一致 |
+| `DASHSCOPE_API_KEY` | 百炼 / DashScope API Key（与 `.env` 中变量名一致） |
+| `DASHSCOPE_EMBED_MODEL` | 默认 **`text-embedding-v4`** |
+| `EMBEDDING_DIMENSIONS` / `NEWS_EMBED_DIM` | 传给 API 的 **`dimension`**，默认 **`1024`**；须与 Qdrant 集合 `vector_size` 一致（v4 支持多档维度见阿里云文档） |
+| `NEWS_EMBED_CONCURRENCY` | DashScope 嵌入 **多批并行**（`ThreadPoolExecutor`），默认 **`4`**，上限 **`16`**；设为 **`1`** 则整段嵌入串行 |
 
-**可选：HTTP OpenAI 兼容嵌入（`NEWS_EMBED_BACKEND=openai`）**
+单次 API 最多 **10** 条文本；`news_embed.py` 按批调用，多批之间可并行（顺序与输入一致）。
 
-用于 OpenAI 或任意兼容 `POST /v1/embeddings` 的网关；**不再**默认请求 DeepSeek 嵌入接口。
+### 并发（可选）
 
-| 变量 | 说明 |
-|------|------|
-| `EMBEDDING_API_KEY` / `OPENAI_API_KEY` | 必填（该模式下） |
-| `EMBEDDING_BASE_URL` | 默认 `https://api.openai.com/v1` |
-| `EMBEDDING_MODEL` | 默认 `text-embedding-3-small` |
-| `EMBEDDING_DIMENSIONS` / `NEWS_EMBED_DIM` | 与向量维一致；`text-embedding-3-*` 会尝试带 `dimensions` 参数 |
-| `EMBEDDING_BATCH_INPUTS` | 每请求最多多少条文本，默认 `32` |
+| 变量 / 参数 | 说明 |
+|-------------|------|
+| `NEWS_FETCH_CONCURRENCY` | Tushare 各 `src` 并行拉取，默认 **`4`**（上限 8）；设为 **`1`** 则串行 |
+| `NEWS_TAG_LLM_CONCURRENCY` | LLM 打标 HTTP 批次并行数，默认 **`4`**（上限 32）；设为 **`1`** 则串行 |
+| `NEWS_EMBED_CONCURRENCY` | DashScope 向量嵌入批次数并行，默认 **`4`**（上限 16）；设为 **`1`** 则串行 |
+| `ingest … --tag-concurrency N` | 覆盖打标并发（不传则用环境变量默认） |
 
 ### 控制台日志
 
@@ -126,6 +124,9 @@ python qdrant/ingest_news.py ingest --days 3 --dry-run
 
 # 完整入库（需 Qdrant + 嵌入 + 打标密钥） --days 7 就是拉取最近7天的新闻
 python qdrant/ingest_news.py ingest --days 7 
+
+# 打标阶段并行 8 路 HTTP（若 API 限流可调低）
+python qdrant/ingest_news.py ingest --days 7 --tag-concurrency 8
 
 # 只执行「删除 pub_ts 早于 30 天」
 python qdrant/ingest_news.py delete-only

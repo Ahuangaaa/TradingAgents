@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tushare news -> DeepSeek tags -> Jina ST embeddings (default) -> Qdrant upsert (500/batch) + TTL delete."""
+"""Tushare news -> DeepSeek tags -> DashScope text-embedding-v4 -> Qdrant upsert (500/batch) + TTL delete."""
 
 from __future__ import annotations
 
@@ -17,6 +17,9 @@ _QDIR = Path(__file__).resolve().parent
 _REPO_ROOT = _QDIR.parent
 if str(_QDIR) not in sys.path:
     sys.path.insert(0, str(_QDIR))
+# ``news_llm_tags`` imports ``tradingagents.dataflows.macro_keywords`` for macro fallback.
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.append(str(_REPO_ROOT))
 
 # Same as cli/main.py: load repo-root .env so TUSHARE_TOKEN / LLM keys work when not exported.
 try:
@@ -90,12 +93,13 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     t_pipeline = time.perf_counter()
 
     logger.info(
-        "======== ingest start: days=%s collection=%r dry_run=%s skip_delete=%s tag_batch=%s upsert_batch=%s ========",
+        "======== ingest start: days=%s collection=%r dry_run=%s skip_delete=%s tag_batch=%s tag_concurrency=%s upsert_batch=%s ========",
         args.days,
         collection,
         args.dry_run,
         args.skip_delete,
         args.tag_batch,
+        args.tag_concurrency,
         upsert_bs,
     )
 
@@ -109,7 +113,11 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
     logger.info("[2/5] LLM structured tagging (tickers / industry / concept) …")
     t0 = time.perf_counter()
-    df = tag_news_dataframe(df, rows_per_llm_call=args.tag_batch)
+    df = tag_news_dataframe(
+        df,
+        rows_per_llm_call=args.tag_batch,
+        tag_concurrency=args.tag_concurrency,
+    )
     logger.info("[2/5] Tagging done in %.2fs — %s rows", time.perf_counter() - t0, len(df))
 
     logger.info("[3/5] Building embedding texts (title + body snippet per row) …")
@@ -199,6 +207,12 @@ def main() -> int:
     pi.add_argument("--dry-run", action="store_true", help="Fetch+tag only; print sample; no Qdrant/embed")
     pi.add_argument("--skip-delete", action="store_true", help="Skip delete_points_older_than")
     pi.add_argument("--tag-batch", type=int, default=15, help="Rows per LLM tagging call")
+    pi.add_argument(
+        "--tag-concurrency",
+        type=int,
+        default=None,
+        help="Parallel LLM HTTP batches (default: env NEWS_TAG_LLM_CONCURRENCY or 4; use 1 for serial)",
+    )
     pi.set_defaults(func=cmd_ingest)
 
     pdel = sub.add_parser("delete-only", help="Only run 30-day pub_ts cleanup")

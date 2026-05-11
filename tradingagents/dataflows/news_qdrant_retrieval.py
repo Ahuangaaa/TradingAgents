@@ -3,7 +3,7 @@
 - **④⑤**：个股/行业/宽松 query 等（见 ``retrieve_*_equity``、``retrieve_markdown_loose``、``retrieve_global_markdown``）。
 - **⑧**：宏观专题专用 query（``retrieve_macro_section_markdown``），与 ④⑤ 检索词分离。
 
-依赖：``qdrant-client``、与入库一致的嵌入（默认 ``qdrant/news_embed.embed_query_texts``）。
+依赖：``qdrant-client``、与入库一致的嵌入（``qdrant/news_embed.py``：DashScope ``text-embedding-v4``）。
 启用：配置 ``news_long_short_use_qdrant`` 或环境变量 ``NEWS_LONG_SHORT_USE_QDRANT=1``。
 """
 
@@ -40,8 +40,8 @@ def _import_embed_query_texts():
         from news_embed import embed_query_texts
     except ImportError as exc:  # noqa: BLE001
         raise RuntimeError(
-            "Qdrant news retrieval requires the repo ``qdrant/`` package and "
-            "``sentence_transformers`` / optional deps — see pyproject optional ``qdrant-news``."
+            "Qdrant news retrieval requires the repo ``qdrant/`` package on ``sys.path`` and "
+            "``dashscope`` (see pyproject optional ``qdrant-news`` / ``qdrant/requirements-ingest.txt``)."
         ) from exc
     return embed_query_texts
 

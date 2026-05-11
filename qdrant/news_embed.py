@@ -1,168 +1,180 @@
-"""Text embeddings: default local ``jinaai/jina-embeddings-v3`` via sentence-transformers; optional HTTP OpenAI-compatible ``/v1/embeddings``."""
+"""Text embeddings via Alibaba DashScope online ``text-embedding-v4`` (no local models)."""
 
 from __future__ import annotations
 
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
+from http import HTTPStatus
 from typing import Any, Sequence
-
-import httpx
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_ST_MODEL = "jinaai/jina-embeddings-v3"
+_DEFAULT_MODEL = "text-embedding-v4"
+_MAX_BATCH = 10
 
 
-def _backend() -> str:
-    return (os.getenv("NEWS_EMBED_BACKEND") or "sentence_transformers").strip().lower()
+def _embed_concurrency() -> int:
+    raw = (os.getenv("NEWS_EMBED_CONCURRENCY") or "4").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 4
+    return max(1, min(16, n))
+
+
+def _dashscope_api_key() -> str:
+    """百炼 / DashScope API key: prefer ``DASHSCOPE_API_KEY`` as requested, then common aliases."""
+    return (
+        os.getenv("DASHSCOPE_API_KEY")
+        or ""
+    ).strip()
 
 
 def embedding_dim() -> int:
-    """Hint for empty-vector edge cases; real size comes from ``len(vectors[0])`` after ``embed_texts``."""
+    """Vector size for Qdrant collection and DashScope ``dimension`` (v3/v4 support this parameter)."""
     return int(os.getenv("EMBEDDING_DIMENSIONS") or os.getenv("NEWS_EMBED_DIM") or "1024")
 
 
-def embed_texts(texts: Sequence[str]) -> list[list[float]]:
-    """Return one vector per input string (same order)."""
-    if not texts:
-        return []
-    backend = _backend()
-    t0 = time.perf_counter()
-    logger.info("Embed: start backend=%r count=%s texts", backend, len(texts))
-    if backend in ("st", "sentence_transformers", "sentence-transformers"):
-        out = _embed_sentence_transformers(list(texts))
-    else:
-        out = _embed_openai_compatible(list(texts))
-    elapsed = time.perf_counter() - t0
-    dim = len(out[0]) if out else 0
-    logger.info("Embed: finished in %.2fs — vectors=%s dim=%s", elapsed, len(out), dim)
-    return out
+def _parse_vectors_from_output(output: Any, *, n_inputs: int) -> list[list[float]]:
+    if output is None:
+        raise RuntimeError("DashScope TextEmbedding: empty output")
+    if isinstance(output, dict):
+        items = output.get("embeddings")
+        if items is None and "embedding" in output:
+            emb = output["embedding"]
+            if isinstance(emb, list) and emb and isinstance(emb[0], (int, float)):
+                if n_inputs != 1:
+                    raise RuntimeError("DashScope: single-vector output but batch size > 1")
+                return [[float(x) for x in emb]]
+        if not items:
+            raise RuntimeError(f"DashScope: no embeddings in output: {output!r}")
+        vecs: list[list[float]] = []
+        for item in items:
+            if isinstance(item, dict):
+                vec = item.get("embedding")
+            else:
+                vec = getattr(item, "embedding", None)
+            if not isinstance(vec, list):
+                raise RuntimeError(f"DashScope: bad embedding item: {item!r}")
+            vecs.append([float(x) for x in vec])
+        if len(vecs) != n_inputs:
+            raise RuntimeError(f"DashScope: expected {n_inputs} vectors, got {len(vecs)}")
+        return vecs
+    raise RuntimeError(f"DashScope: unexpected output type: {type(output)!r}")
 
 
-def _embed_openai_compatible(texts: list[str]) -> list[list[float]]:
-    key = (os.getenv("EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+def _embed_dashscope_batch(texts: list[str]) -> list[list[float]]:
+    import dashscope
+    from dashscope import TextEmbedding
+
+    key = _dashscope_api_key()
     if not key:
         raise RuntimeError(
-            "Embedding (NEWS_EMBED_BACKEND=openai): set EMBEDDING_API_KEY or OPENAI_API_KEY."
+            "DashScope embedding: set DASHSCOPE_API_KEY for text-embedding-v4."
         )
-    base = (os.getenv("EMBEDDING_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
-    model = (os.getenv("EMBEDDING_MODEL") or "text-embedding-3-small").strip()
+    dashscope.api_key = key
+
     dim = embedding_dim()
-    url = f"{base}/embeddings"
-    out_vecs: list[list[float]] = []
-    chunk_size = int(os.getenv("EMBEDDING_BATCH_INPUTS") or "32")
-    n_chunks = (len(texts) + chunk_size - 1) // chunk_size
-    logger.info(
-        "Embed HTTP: POST %s model=%r chunks=%s (batch_inputs=%s)",
-        url,
-        model,
-        n_chunks,
-        chunk_size,
-    )
-    for i in range(0, len(texts), chunk_size):
-        batch = texts[i : i + chunk_size]
-        chunk_no = i // chunk_size + 1
-        logger.info(
-            "Embed HTTP: chunk %s/%s (inputs %s..%s)",
-            chunk_no,
-            n_chunks,
-            i,
-            min(i + len(batch), len(texts)) - 1,
-        )
-        payload: dict[str, Any] = {"model": model, "input": batch}
-        if "3-small" in model or "3-large" in model:
-            payload["dimensions"] = dim
-        with httpx.Client(timeout=120.0) as client:
-            r = client.post(
-                url,
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json=payload,
-            )
-            if r.status_code >= 400 and "dimensions" in payload:
-                payload.pop("dimensions", None)
-                r = client.post(
-                    url,
-                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                    json=payload,
-                )
-            r.raise_for_status()
-            data = r.json()
-        embs = sorted(data.get("data", []), key=lambda x: x.get("index", 0))
-        for row in embs:
-            vec = row.get("embedding")
-            if not isinstance(vec, list):
-                raise RuntimeError("Invalid embedding response")
-            out_vecs.append([float(x) for x in vec])
-    if len(out_vecs) != len(texts):
-        raise RuntimeError(f"Embedding count mismatch: got {len(out_vecs)} expected {len(texts)}")
-    return out_vecs
+    model = (os.getenv("DASHSCOPE_EMBED_MODEL") or _DEFAULT_MODEL).strip()
+
+    resp = TextEmbedding.call(model=model, input=texts, dimension=dim)
+
+    if resp.status_code != HTTPStatus.OK:
+        msg = getattr(resp, "message", None) or getattr(resp, "code", None) or str(resp)
+        raise RuntimeError(f"DashScope TextEmbedding failed: status={resp.status_code!r} detail={msg!r}")
+
+    output = getattr(resp, "output", None)
+    if not isinstance(output, dict):
+        raise RuntimeError(f"DashScope: expected dict output, got {type(output)!r}: {output!r}")
+    return _parse_vectors_from_output(output, n_inputs=len(texts))
 
 
-_st_model: Any = None
-
-
-def _jina_encode_kwargs(model_name: str) -> dict[str, Any]:
-    if "jina-embeddings-v3" not in model_name.lower():
-        return {}
-    task = (os.getenv("JINA_EMBED_TASK") or "retrieval.passage").strip()
-    return {"task": task, "prompt_name": task}
-
-
-def _jina_query_encode_kwargs(model_name: str) -> dict[str, Any]:
-    """Jina v3 asymmetric retrieval: query side (indexed docs use ``retrieval.passage``)."""
-    if "jina-embeddings-v3" not in model_name.lower():
-        return {}
-    task = (os.getenv("JINA_EMBED_QUERY_TASK") or "retrieval.query").strip()
-    return {"task": task, "prompt_name": task}
-
-
-def _embed_sentence_transformers(
-    texts: list[str],
+def _embed_batch_with_progress(
+    batch_idx: int,
+    n_batches: int,
+    batch: list[str],
     *,
-    encode_extra: dict[str, Any] | None = None,
+    text_start: int,
+    n_texts: int,
 ) -> list[list[float]]:
-    global _st_model  # noqa: PLW0603
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError as exc:  # noqa: BLE001
-        raise RuntimeError(
-            "Install sentence-transformers: pip install -r qdrant/requirements-ingest.txt"
-        ) from exc
-
-    model_name = (os.getenv("SENTENCE_TRANSFORMERS_MODEL") or _DEFAULT_ST_MODEL).strip()
-    if encode_extra is None:
-        extra = _jina_encode_kwargs(model_name)
-    else:
-        extra = encode_extra
-    if _st_model is None:
-        logger.info("Embed ST: loading model %r …", model_name)
-        _st_model = SentenceTransformer(model_name, trust_remote_code=True)
-    else:
-        logger.info("Embed ST: using loaded model %r encode_kwargs=%s", model_name, extra or "{}")
-    vecs = _st_model.encode(
-        texts,
-        normalize_embeddings=True,
-        show_progress_bar=False,
-        **extra,
+    """Run one DashScope batch; log start/finish so ingest shows embedding progress."""
+    n_in_batch = len(batch)
+    t1 = time.perf_counter()
+    text_end = text_start + n_in_batch
+    logger.info(
+        "Embed DashScope: [%s/%s] texts %s–%s of %s (%s in this request)",
+        batch_idx + 1,
+        n_batches,
+        text_start + 1,
+        text_end,
+        n_texts,
+        n_in_batch,
     )
-    return [v.tolist() for v in vecs]
+    vecs = _embed_dashscope_batch(batch)
+    dt = time.perf_counter() - t1
+    logger.info(
+        "Embed DashScope: [%s/%s] done in %.2fs — got %s vectors (cumulative texts done: %s/%s)",
+        batch_idx + 1,
+        n_batches,
+        dt,
+        len(vecs),
+        text_end,
+        n_texts,
+    )
+    return vecs
+
+
+def _embed_job(args: tuple[int, int, list[str], int, int]) -> list[list[float]]:
+    batch_idx, n_batches, batch, text_start, n_texts = args
+    return _embed_batch_with_progress(
+        batch_idx, n_batches, batch, text_start=text_start, n_texts=n_texts
+    )
+
+
+def embed_texts(texts: Sequence[str]) -> list[list[float]]:
+    """Return one dense vector per input string (same order).
+
+    Up to 10 texts per DashScope request; multiple batches run in parallel when
+    ``NEWS_EMBED_CONCURRENCY`` > 1 (see ``_embed_concurrency``).
+    """
+    if not texts:
+        return []
+    lst = [str(t) for t in texts]
+    t0 = time.perf_counter()
+    model = (os.getenv("DASHSCOPE_EMBED_MODEL") or _DEFAULT_MODEL).strip()
+    workers = _embed_concurrency()
+    batches = [lst[i : i + _MAX_BATCH] for i in range(0, len(lst), _MAX_BATCH)]
+    logger.info(
+        "Embed DashScope: model=%r count=%s dimension=%s batches=%s workers=%s",
+        model,
+        len(lst),
+        embedding_dim(),
+        len(batches),
+        workers,
+    )
+    n_texts = len(lst)
+    n_batches = len(batches)
+    jobs = [
+        (i, n_batches, batches[i], i * _MAX_BATCH, n_texts)
+        for i in range(n_batches)
+    ]
+    all_vecs: list[list[float]] = []
+    if workers <= 1 or n_batches <= 1:
+        for job in jobs:
+            all_vecs.extend(_embed_job(job))
+    else:
+        # executor.map preserves batch order → final vectors match input order
+        with ThreadPoolExecutor(max_workers=min(workers, n_batches)) as pool:
+            for chunk_vecs in pool.map(_embed_job, jobs):
+                all_vecs.extend(chunk_vecs)
+    elapsed = time.perf_counter() - t0
+    dim = len(all_vecs[0]) if all_vecs else 0
+    logger.info("Embed DashScope: finished in %.2fs — vectors=%s dim=%s", elapsed, len(all_vecs), dim)
+    return all_vecs
 
 
 def embed_query_texts(texts: Sequence[str]) -> list[list[float]]:
-    """Embed short **queries** for vector search (Jina v3 uses ``retrieval.query`` vs passage docs)."""
-    if not texts:
-        return []
-    backend = _backend()
-    t0 = time.perf_counter()
-    logger.info("Embed query: start backend=%r count=%s", backend, len(texts))
-    if backend in ("st", "sentence_transformers", "sentence-transformers"):
-        model_name = (os.getenv("SENTENCE_TRANSFORMERS_MODEL") or _DEFAULT_ST_MODEL).strip()
-        extra = _jina_query_encode_kwargs(model_name)
-        out = _embed_sentence_transformers(list(texts), encode_extra=extra)
-    else:
-        out = _embed_openai_compatible(list(texts))
-    elapsed = time.perf_counter() - t0
-    dim = len(out[0]) if out else 0
-    logger.info("Embed query: finished in %.2fs — vectors=%s dim=%s", elapsed, len(out), dim)
-    return out
+    """Same as ``embed_texts`` — ``text-embedding-v4`` uses a single symmetric embedding for passage and query."""
+    return embed_texts(texts)
