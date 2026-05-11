@@ -218,3 +218,7 @@ __marimo__/
 
 # Cache
 **/data_cache/
+
+# Qdrant Docker bind-mount data (local vectors + WAL; regenerate via ingest, do not commit)
+qdrant/qdrant_storage/
+qdrant/qdrant_snapshots/

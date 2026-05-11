@@ -119,7 +119,7 @@ Install the package and its dependencies:
 pip install .
 ```
 
-Optional **Qdrant-backed ④⑤ news** (long-form + flash) for `get_news` / `get_global_news`: ingest vectors with `qdrant/ingest_news.py` (see `qdrant/README.md`), then `pip install .[qdrant-news]`, set `QDRANT_URL` and `QDRANT_COLLECTION` (default `financial_news`), and enable `NEWS_LONG_SHORT_USE_QDRANT=1` or `news_long_short_use_qdrant` in config. Embeddings use **DashScope** `text-embedding-v4` (same as ingest); set **`BL-KEY`** (or `DASHSCOPE_API_KEY`) and match **`EMBEDDING_DIMENSIONS`** to the Qdrant collection vector size (default 1024).
+Optional **Qdrant-backed ④⑤ news** (long-form + flash) for `get_news` / `get_global_news`: ingest vectors with `qdrant/ingest_news.py` (see `qdrant/README.md`), then `pip install .[qdrant-news]`, set `QDRANT_URL` and `QDRANT_COLLECTION` (default `financial_news`), and enable `NEWS_LONG_SHORT_USE_QDRANT=1` or `news_long_short_use_qdrant` in config. Embeddings use **DashScope** `text-embedding-v4` (same as ingest); set **`DASHSCOPE_API_KEY`**  and match **`EMBEDDING_DIMENSIONS`** to the Qdrant collection vector size (default 1024).
 
 ### Docker
 
