@@ -410,8 +410,6 @@ def _research_report_lines(
                 continue
             seen.add(key)
             abstr = str(r.get("abstr", "")).strip()
-            if len(abstr) > 1200:
-                abstr = abstr[:1200] + "…"
             out.append(
                 f"### {td} | {r.get('inst_csname', '')} [{r.get('report_type', '')}]\n**{title}**\n"
                 f"{r.get('name', '')} ({r.get('ts_code', '')}) | {r.get('author', '')}\n{abstr}\n"
@@ -438,14 +436,126 @@ def _research_report_lines(
                     continue
                 seen.add(key)
                 abstr = str(r.get("abstr", "")).strip()
-                if len(abstr) > 1200:
-                    abstr = abstr[:1200] + "…"
                 out.append(
                     f"### {td} | {r.get('inst_csname', '')} [{r.get('report_type', '')}]\n**{title}**\n"
                     f"{r.get('ind_name', '')} | {r.get('author', '')}\n{abstr}\n"
                     f"{str(r.get('url', '')).strip()}\n"
                 )
     return out
+
+
+def _refine_research_report_lines_with_llm(
+    *,
+    ticker: str,
+    ts_code: str,
+    stock_name: str,
+    industry: str,
+    win_start: str,
+    win_end: str,
+    raw_lines: list[str],
+) -> str:
+    """LLM 精简 ⑦ 研报（先逐篇，再全局压缩），总输出硬限制为配置上限。"""
+    if not raw_lines:
+        return ""
+    cfg = get_config()
+    # 语义约定：
+    # - news_research_llm_input_max_chars: 每篇研报送入 LLM 的输入上限
+    # - news_research_llm_output_max_chars: 所有研报汇总后的最终总输出上限
+    out_cap = int(cfg.get("news_research_llm_output_max_chars", 5000))
+    in_cap = int(cfg.get("news_research_llm_input_max_chars", 30000))
+    trunc_suffix = "\n\n…（研报精简输出已截断）"
+    raw_lines = [x.strip() for x in raw_lines if str(x or "").strip()]
+    if not raw_lines:
+        return ""
+    raw = "\n\n".join(raw_lines)
+
+    if not bool(cfg.get("news_research_llm_refine", True)):
+        return raw[:out_cap]
+
+    try:
+        from .news_long_short_llm_filter import _get_quick_llm, _normalize_llm_content
+
+        llm, model = _get_quick_llm()
+    except Exception as exc:
+        logger.warning("⑦ 研报精简：无法创建 quick LLM（%s）", exc)
+        return raw[:out_cap]
+
+    # 第1阶段：逐篇研报独立精简
+    n_reports = max(1, len(raw_lines))
+    per_item_cap = max(600, min(1800, out_cap // min(n_reports, 6)))
+    item_system = f"""你是A股卖方研报编辑。输入是一篇研报条目，请只提取对当前标的有价值的信息。
+
+重点：
+1) 个股盈利（收入/利润/增速、盈利驱动、盈利预测变化）
+2) 行业盈利与景气（供需、价格、成本、周期与边际变化）
+3) 评级/目标价/估值口径变化、关键催化与风险
+
+要求：
+- 只依据输入，不编造数字。
+- 尽量保留时间、机构名、关键数值与方向（上调/下调）。
+- 不要输出代码围栏。
+- 输出 <= {per_item_cap} 字符。"""
+    item_results: list[str] = []
+    for idx, one in enumerate(raw_lines, start=1):
+        one_in = one if len(one) <= in_cap else one[:in_cap] + "\n\n…（单篇研报输入已截断）"
+        item_user = (
+            f"标的: {ticker} | ts_code: {ts_code} | 名称: {stock_name or '未知'} | 行业: {industry or '未知'}\n"
+            f"研报窗口: {win_start} ~ {win_end}\n"
+            f"第 {idx}/{n_reports} 篇研报\n\n"
+            f"--- 单篇研报原文 ---\n{one_in}"
+        )
+        try:
+            resp = llm.invoke([("system", item_system), ("human", item_user)])
+            txt = _normalize_llm_content(getattr(resp, "content", None)).strip()
+        except Exception:
+            txt = ""
+        if not txt:
+            txt = one_in[:per_item_cap]
+        if len(txt) > per_item_cap:
+            txt = txt[:per_item_cap]
+        item_results.append(f"#### 研报{idx}\n{txt}")
+
+    merged = "\n\n".join(item_results).strip()
+    if not merged:
+        merged = raw[:out_cap]
+
+    # 第2阶段：若总长度超限，对“逐篇精简结果”继续全局压缩（最多 3 轮）
+    current = merged
+    global_system = """你是A股研究总编。输入是“多篇研报逐篇精简结果”的合集，请做全局去重与归纳。
+必须突出：个股盈利、行业盈利与景气、估值/评级变化、关键催化与风险、待验证点。
+只基于输入，不编造；不要代码围栏。"""
+    for _ in range(3):
+        if len(current) <= out_cap:
+            break
+        target = max(800, out_cap - 120)
+        global_user = (
+            f"标的: {ticker} | ts_code: {ts_code} | 名称: {stock_name or '未知'} | 行业: {industry or '未知'}\n"
+            f"窗口: {win_start} ~ {win_end}\n"
+            f"请将以下内容压缩到 <= {target} 字符。\n\n--- 逐篇精简汇总 ---\n{current}"
+        )
+        try:
+            resp = llm.invoke([("system", global_system), ("human", global_user)])
+            nxt = _normalize_llm_content(getattr(resp, "content", None)).strip()
+        except Exception:
+            nxt = ""
+        if not nxt:
+            break
+        if len(nxt) >= len(current):
+            # 模型未有效压缩，避免无效循环
+            break
+        current = nxt
+
+    if len(current) > out_cap:
+        keep = max(0, out_cap - len(trunc_suffix))
+        current = current[:keep] + trunc_suffix
+    logger.info(
+        "⑦ 研报精简：model=%r reports=%s raw_len=%s out_len=%s",
+        model,
+        len(raw_lines),
+        len(raw),
+        len(current),
+    )
+    return current
 
 
 def _research_report_global_lines(
@@ -973,8 +1083,10 @@ def get_tushare_news(
             "news_raw_flash_per_src": int(cfg.get("news_raw_flash_per_src", 14)),
             "news_macro_section8_enabled": bool(cfg.get("news_macro_section8_enabled", True)),
             "news_macro_section8_search_limit": int(cfg.get("news_macro_section8_search_limit", 100)),
+            "news_research_llm_refine": bool(cfg.get("news_research_llm_refine", True)),
+            "news_research_llm_output_max_chars": int(cfg.get("news_research_llm_output_max_chars", 5000)),
             "qdrant_collection": (os.getenv("QDRANT_COLLECTION") or "financial_news"),
-            "schema": "run_cache_v1",
+            "schema": "run_cache_v2",
         },
     )
     cached = _RUN_NEWS_TOOL_CACHE.get(cache_key)
@@ -1060,7 +1172,16 @@ def get_tushare_news(
     )
 
     sec6 = _anns_d_lines(ts_code, irm_rr_d0, irm_rr_d1)
-    sec7 = _research_report_lines(ts_code, industry, irm_rr_d0, irm_rr_d1)
+    sec7_raw = _research_report_lines(ts_code, industry, irm_rr_d0, irm_rr_d1)
+    sec7 = _refine_research_report_lines_with_llm(
+        ticker=ticker,
+        ts_code=ts_code,
+        stock_name=stock_name,
+        industry=industry,
+        win_start=irm_rr_d0,
+        win_end=irm_rr_d1,
+        raw_lines=sec7_raw,
+    )
     news_hdr = (
         f"窗口: {start_date} ~ {end_date} | ④⑤ 子窗: {win_45_start[:10]} ~ {win_45_end[:10]}（最长 {lb} 天）| "
         "④⑤ 数据源：**Qdrant** 向量库 | "
@@ -1076,13 +1197,13 @@ def get_tushare_news(
         f"### ⑤ 新闻快讯 · 短讯（news）\n\n"
         + ("\n".join(sec5) if sec5 else ph),
         f"### ⑥ 上市公司公告（anns_d）\n\n" + ("\n".join(sec6) if sec6 else ph),
-        f"### ⑦ 券商研究报告（research_report）\n\n"
+        f"### ⑦ 券商研究报告（research_report，LLM精简≤{int(cfg.get('news_research_llm_output_max_chars', 5000))}字）\n\n"
         + (
             "> **说明**：行业研报依赖 ``ind_name`` 与研报库内名称一致；若仅有个股研报无行业条属正常。\n\n"
             if industry
             else ""
         )
-        + ("\n".join(sec7) if sec7 else ph),
+        + (sec7 if sec7 else ph),
     ]
     if not (sec1 or sec2 or sec4 or sec5 or sec6 or sec7):
         blocks.append(

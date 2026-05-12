@@ -75,11 +75,15 @@ def _get_quick_llm():
     from tradingagents.llm_clients import create_llm_client
 
     cfg = get_config()
-    provider = (cfg.get("llm_provider") or "openai").lower()
-    model = cfg.get("quick_think_llm") or "gpt-4o-mini"
+    provider = "deepseek"
+    model = cfg.get("quick_think_llm") or "deepseek-v4-flash"
+    if model not in ("deepseek-v4-flash", "deepseek-v4-pro"):
+        raise ValueError(
+            f"Unsupported quick_think_llm={model!r}. Allowed models: deepseek-v4-flash, deepseek-v4-pro."
+        )
     base_url = cfg.get("backend_url")
     kwargs: dict[str, Any] = {}
-    if provider == "deepseek" and cfg.get("deepseek_quick_thinking_enabled", False):
+    if cfg.get("deepseek_quick_thinking_enabled", False):
         kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
         kwargs["reasoning_effort"] = cfg.get("deepseek_quick_reasoning_effort") or "max"
     client = create_llm_client(

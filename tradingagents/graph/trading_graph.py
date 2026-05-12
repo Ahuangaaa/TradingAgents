@@ -86,6 +86,17 @@ class TradingAgentsGraph:
 
         # Initialize LLMs with provider-specific thinking configuration
         # (DeepSeek: quick vs deep can differ — e.g. max effort + thinking only on deep.)
+        if (self.config.get("llm_provider") or "").lower() != "deepseek":
+            raise ValueError("This build supports only llm_provider='deepseek'.")
+        if self.config.get("quick_think_llm") not in ("deepseek-v4-flash", "deepseek-v4-pro"):
+            raise ValueError(
+                "quick_think_llm must be one of: deepseek-v4-flash, deepseek-v4-pro."
+            )
+        if self.config.get("deep_think_llm") not in ("deepseek-v4-flash", "deepseek-v4-pro"):
+            raise ValueError(
+                "deep_think_llm must be one of: deepseek-v4-flash, deepseek-v4-pro."
+            )
+
         deep_llm_kwargs = self._get_llm_kwargs_for_client(for_deep=True)
         quick_llm_kwargs = self._get_llm_kwargs_for_client(for_deep=False)
 
@@ -143,38 +154,26 @@ class TradingAgentsGraph:
         self._checkpointer_ctx = None
 
     def _get_llm_kwargs_for_client(self, *, for_deep: bool) -> Dict[str, Any]:
-        """Provider-specific kwargs for one LLM client (quick vs deep may differ)."""
+        """DeepSeek-specific kwargs for one LLM client (quick vs deep may differ)."""
         kwargs: Dict[str, Any] = {}
-        provider = self.config.get("llm_provider", "").lower()
+        provider = (self.config.get("llm_provider") or "").lower()
+        if provider != "deepseek":
+            raise ValueError(
+                f"Unsupported llm_provider={provider!r}. This build supports only 'deepseek'."
+            )
 
-        if provider == "google":
-            thinking_level = self.config.get("google_thinking_level")
-            if thinking_level:
-                kwargs["thinking_level"] = thinking_level
-
-        elif provider == "openai":
-            reasoning_effort = self.config.get("openai_reasoning_effort")
-            if reasoning_effort:
-                kwargs["reasoning_effort"] = reasoning_effort
-
-        elif provider == "anthropic":
-            effort = self.config.get("anthropic_effort")
-            if effort:
-                kwargs["effort"] = effort
-
-        elif provider == "deepseek":
-            if for_deep:
-                if self.config.get("deepseek_deep_thinking_enabled", True):
-                    kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
-                    kwargs["reasoning_effort"] = (
-                        self.config.get("deepseek_deep_reasoning_effort") or "max"
-                    )
-            else:
-                if self.config.get("deepseek_quick_thinking_enabled", False):
-                    kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
-                    kwargs["reasoning_effort"] = (
-                        self.config.get("deepseek_quick_reasoning_effort") or "max"
-                    )
+        if for_deep:
+            if self.config.get("deepseek_deep_thinking_enabled", True):
+                kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+                kwargs["reasoning_effort"] = (
+                    self.config.get("deepseek_deep_reasoning_effort") or "max"
+                )
+        else:
+            if self.config.get("deepseek_quick_thinking_enabled", False):
+                kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+                kwargs["reasoning_effort"] = (
+                    self.config.get("deepseek_quick_reasoning_effort") or "max"
+                )
 
         return kwargs
 

@@ -16,7 +16,10 @@ from typing import Any, Callable
 import pandas as pd
 
 from tradingagents.dataflows.config import get_config
-from tradingagents.dataflows.macro_keywords import macro_vector_search_query_texts
+from tradingagents.dataflows.macro_keywords import (
+    macro_vector_search_query_text,
+    macro_vector_search_query_texts,
+)
 from tradingagents.dataflows.run_trace_context import append_qdrant_trace
 
 logger = logging.getLogger(__name__)
@@ -169,13 +172,14 @@ def vector_search_one(
     has_api_key = bool((os.getenv("QDRANT_API_KEY") or "").strip())
     try:
         try:
-            hits = client.search(
+            resp = client.query_points(
                 collection_name=_collection_name(cfg),
-                query_vector=vec[0],
+                query=vec[0],
                 query_filter=flt,
                 limit=int(limit),
                 with_payload=True,
             )
+            hits = getattr(resp, "points", [])
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(
                 "Qdrant vector search failed. "
@@ -415,6 +419,28 @@ def retrieve_macro_section_markdown(
     ]
     merge_cap = max(per_major + per_flash + 20, int(search_limit))
     hits = multi_search_merge(groups, top_n=merge_cap)
+    # If multi-route chunk queries are too sparse, run one broad fallback query
+    # and merge it in to improve macro recall under volatile news distributions.
+    min_expected = max(6, (per_major + per_flash) // 3)
+    if len(hits) < min_expected:
+        prev_hits = len(hits)
+        try:
+            broad_q = macro_vector_search_query_text()
+            fb = vector_search_one(
+                query_text=broad_q,
+                win_start=win_start,
+                win_end=win_end,
+                limit=max(route_lim, min(220, route_lim + 40)),
+            )
+            hits = multi_search_merge([hits, fb], top_n=max(merge_cap, len(hits) + len(fb)))
+            logger.info(
+                "Qdrant ⑧ macro fallback query applied: previous_hits=%s fallback_hits=%s merged=%s",
+                prev_hits,
+                len(fb),
+                len(hits),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Qdrant ⑧ macro fallback query failed: %s", exc)
 
     major_lines: list[str] = []
     flash_lines: list[str] = []

@@ -5,7 +5,22 @@ from typing import Annotated
 
 def _clean_dataframe(data: pd.DataFrame) -> pd.DataFrame:
     """Normalize a stock DataFrame for stockstats: parse dates, drop invalid rows, fill price gaps."""
-    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
+    # Tushare ``trade_date`` is typically YYYYMMDD. After CSV round-trips this
+    # column may be inferred as int (e.g. 20260512). ``pd.to_datetime`` on ints
+    # treats them as unix-ns and yields 1970 dates, so parse 8-digit values
+    # explicitly as calendar dates first, then fall back to generic parsing.
+    date_raw = data["Date"].astype(str).str.strip()
+    ymd_mask = date_raw.str.fullmatch(r"\d{8}")
+    parsed = pd.Series(pd.NaT, index=data.index, dtype="datetime64[ns]")
+    if ymd_mask.any():
+        parsed.loc[ymd_mask] = pd.to_datetime(
+            date_raw.loc[ymd_mask], format="%Y%m%d", errors="coerce"
+        )
+    if (~ymd_mask).any():
+        parsed.loc[~ymd_mask] = pd.to_datetime(
+            date_raw.loc[~ymd_mask], errors="coerce"
+        )
+    data["Date"] = parsed
     data = data.dropna(subset=["Date"])
 
     price_cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in data.columns]

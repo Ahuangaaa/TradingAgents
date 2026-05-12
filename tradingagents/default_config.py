@@ -12,19 +12,15 @@ DEFAULT_CONFIG = {
     # Pending entries are never pruned. None disables rotation entirely.
     "memory_log_max_entries": None,
     # LLM settings
-    "llm_provider": "openai",
-    "deep_think_llm": "gpt-5.4",
-    "quick_think_llm": "gpt-5.4-mini",
+    "llm_provider": "deepseek",
+    "deep_think_llm": "deepseek-v4-pro",
+    "quick_think_llm": "deepseek-v4-flash",
     # When None, each provider's client falls back to its own default endpoint
     # (api.openai.com for OpenAI, generativelanguage.googleapis.com for Gemini, ...).
     # The CLI overrides this per provider when the user picks one. Keeping a
     # provider-specific URL here would leak (e.g. OpenAI's /v1 was previously
     # being forwarded to Gemini, producing malformed request URLs).
     "backend_url": None,
-    # Provider-specific thinking configuration
-    "google_thinking_level": None,      # "high", "minimal", etc.
-    "openai_reasoning_effort": None,    # "medium", "high", "low"
-    "anthropic_effort": None,           # "high", "medium", "low"
     # DeepSeek V4 extended thinking: quick vs deep LLM are configured separately
     # (reasoning_effort + extra_body["thinking"]). Deep model defaults to max effort.
     "deepseek_quick_thinking_enabled": True,
@@ -68,18 +64,22 @@ DEFAULT_CONFIG = {
     "news_long_short_lookback_days": 30,
     "news_raw_major_per_src": 12,
     "news_raw_flash_per_src": 14,
-    "news_raw_major_content_max": 2000,
+    "news_raw_major_content_max": 3000,
     "news_raw_flash_content_max": 1200,
     # ④⑤ from Qdrant (not Tushare major_news/news) when True or NEWS_LONG_SHORT_USE_QDRANT=1
     "news_long_short_use_qdrant": True,
-    "news_qdrant_search_limit": 120,
+    "news_qdrant_search_limit": 200,
     "news_qdrant_per_route_limit": 40,
-    "news_macro_vector_terms_per_query": 12,
+    # ⑦ 研报：LLM 精简（个股+行业）输出长度硬上限
+    "news_research_llm_refine": True,
+    "news_research_llm_input_max_chars": 30000,
+    "news_research_llm_output_max_chars": 5000,
+    "news_macro_vector_terms_per_query": 8,
     # ⑧ 宏观向量专题（专用检索词 + 可选 LLM；与 ④⑤ query 分离）
     "news_macro_section8_enabled": True,
-    "news_macro_section8_search_limit": 100,
-    "news_macro_section8_per_major": 10,
-    "news_macro_section8_per_flash": 12,
+    "news_macro_section8_search_limit": 180,
+    "news_macro_section8_per_major": 14,
+    "news_macro_section8_per_flash": 18,
     "news_macro_section8_major_content_max": 2200,
     "news_macro_section8_flash_content_max": 1500,
     "news_macro_section8_llm_refine": True,
