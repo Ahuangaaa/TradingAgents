@@ -27,6 +27,7 @@ from rich.rule import Rule
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.dataflows.tushare_data import clear_run_news_tool_cache
 from tradingagents.dataflows.run_trace_context import set_report_dir
 from tradingagents.dataflows.trace_rollup import (
     rollup_events_jsonl,
@@ -1029,6 +1030,9 @@ def run_analysis(
     interactive_save: bool = False,
     print_report: bool = False,
 ):
+    # Per-analysis cache lifecycle: clear before each run to avoid carryover.
+    clear_run_news_tool_cache()
+
     # First get all user selections
     selections = get_user_selections()
 
@@ -1330,6 +1334,9 @@ def run_analysis(
         display_choice = typer.prompt("\nDisplay full report on screen?", default="Y").strip().upper()
         if display_choice in ("Y", "YES", ""):
             display_complete_report(final_state)
+
+    # Clear ephemeral news cache after this analysis completes.
+    clear_run_news_tool_cache()
 
 
 @app.command()

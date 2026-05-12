@@ -42,8 +42,10 @@ def _import_embed_query_texts():
         spec.loader.exec_module(mod)
     except ImportError as exc:
         raise RuntimeError(
-            "Qdrant news retrieval requires embedding deps (see pyproject optional ``qdrant-news`` "
-            "and ``qdrant/requirements-ingest.txt``)."
+            "Qdrant news retrieval cannot load `qdrant/news_embed.py` dependencies. "
+            "Install optional deps with `pip install .[qdrant-news]` (or "
+            "`pip install -r qdrant/requirements-ingest.txt`) and ensure "
+            "`DASHSCOPE_API_KEY` is configured."
         ) from exc
     fn = getattr(mod, "embed_query_texts", None)
     if not callable(fn):
@@ -163,14 +165,23 @@ def vector_search_one(
         ]
     )
     client = _make_client()
+    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    has_api_key = bool((os.getenv("QDRANT_API_KEY") or "").strip())
     try:
-        hits = client.search(
-            collection_name=_collection_name(cfg),
-            query_vector=vec[0],
-            query_filter=flt,
-            limit=int(limit),
-            with_payload=True,
-        )
+        try:
+            hits = client.search(
+                collection_name=_collection_name(cfg),
+                query_vector=vec[0],
+                query_filter=flt,
+                limit=int(limit),
+                with_payload=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                "Qdrant vector search failed. "
+                f"url={qdrant_url!r}, collection={_collection_name(cfg)!r}, "
+                f"api_key_configured={has_api_key}. Root cause: {exc}"
+            ) from exc
     finally:
         client.close()
     return list(hits)

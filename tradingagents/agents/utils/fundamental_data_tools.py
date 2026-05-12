@@ -32,7 +32,7 @@ def get_industry_peers(
         str | None,
         "YYYY-mm-dd analysis or trade date; optional cache key for the peer list.",
     ] = None,
-    max_peers: Annotated[int, "max peer rows to return (default 8)"] = 8,
+    max_peers: Annotated[int, "max peer rows to return (default 3)"] = 3,
 ) -> str:
     """
     List **business competitors** as A-shares: backend calls **DeepSeek** (dedicated Chat Completions prompt),

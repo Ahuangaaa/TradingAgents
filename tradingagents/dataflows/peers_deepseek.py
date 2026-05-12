@@ -126,13 +126,13 @@ def fetch_validated_peers(
     focal_name: str,
     focal_industry: str,
     *,
-    max_peers: int = 5,
+    max_peers: int = 3,
     curr_date: str | None = None,
     use_cache: bool = True,
 ) -> list[ValidatedPeer]:
     """调用 DeepSeek（专用 system/user 提示词，Chat Completions）列出与标的最相关的已上市 A 股竞争对手，再经 ``stock_basic`` 校码，返回最多 ``max_peers`` 条。"""
     focal_ts = str(focal_ts_code).strip().upper()
-    cap = max(1, min(int(max_peers) if max_peers else 5, 12))
+    cap = max(1, min(int(max_peers) if max_peers else 3, 12))
 
     if use_cache:
         ck = _cache_key(focal_ts, curr_date)

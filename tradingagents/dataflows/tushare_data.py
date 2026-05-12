@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timedelta
+import hashlib
+import json
 from typing import Annotated
 
 import pandas as pd
@@ -13,7 +15,6 @@ from stockstats import wrap
 
 from .config import get_config
 from .macro_keywords import macro_market_keywords
-from .news_long_short_llm_filter import news_llm_filter_disabled, screen_long_short_news_with_llm
 from .stockstats_utils import _clean_dataframe
 from .tushare_common import (
     TushareVendorError,
@@ -24,6 +25,8 @@ from .tushare_common import (
 from .utils import safe_ticker_component
 
 logger = logging.getLogger(__name__)
+
+_RUN_NEWS_TOOL_CACHE: dict[str, str] = {}
 
 # 上证 e 互动 / 深证互动易 / 国家政策库 ``npr`` / 研报 ``research_report`` / 公告 ``anns_d``：相对 **分析结束日** 固定回溯 90 个自然日（与 ④⑤/⑧ 的窗口独立）。
 NEWS_IRM_NPR_REPORT_LOOKBACK_CAL_DAYS = 90
@@ -50,6 +53,16 @@ def _df_to_csv_header(title: str, ts_code: str, body: str) -> str:
     header = f"# {title} for {ts_code}\n"
     header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
     return header + body
+
+
+def clear_run_news_tool_cache() -> None:
+    """Clear per-analysis in-memory cache for get_news/get_global_news."""
+    _RUN_NEWS_TOOL_CACHE.clear()
+
+
+def _news_tool_cache_key(kind: str, payload: dict) -> str:
+    raw = json.dumps({"kind": kind, **payload}, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:48]
 
 
 def _df_to_markdown_table(df: pd.DataFrame) -> str:
@@ -755,7 +768,7 @@ def get_tushare_industry_peers(
         str,
         "Optional YYYY-mm-dd cache key for peer list; does not change model ranking.",
     ] = None,
-    max_peers: Annotated[int, "Maximum number of peer rows (excluding focal) to return"] = 8,
+    max_peers: Annotated[int, "Maximum number of peer rows (excluding focal) to return"] = 3,
 ) -> str:
     """List **business competitors** as A-shares: **DeepSeek** (dedicated prompt via Chat Completions) + ``stock_basic`` validation.
 
@@ -790,7 +803,7 @@ def get_tushare_industry_peers(
     industry = str(row0.get("industry") or "").strip()
     focal_name = str(row0.get("name") or "").strip()
 
-    cap = max(1, min(int(max_peers) if max_peers else 8, 12))
+    cap = max(1, min(int(max_peers) if max_peers else 3, 12))
     peers = fetch_validated_peers(
         ts_code,
         focal_name,
@@ -932,28 +945,9 @@ def _macro_section8_block(cfg: dict, *, win_start: str, win_end: str) -> str:
     if not raw_md:
         return head + "（本期无命中或未入库该时间窗。）"
 
-    refined = ""
-    if cfg.get("news_macro_section8_llm_refine", True):
-        try:
-            from .macro_qdrant_llm_refine import (
-                macro_section8_llm_refine_disabled,
-                refine_macro_section8_corpus,
-            )
-
-            if not macro_section8_llm_refine_disabled():
-                refined = refine_macro_section8_corpus(
-                    raw_md, win_start=win_start, win_end=win_end
-                ).strip()
-        except Exception as exc:
-            logger.warning("⑧ 宏观 LLM 精炼失败：%s", exc)
     parts = [head]
-    if refined:
-        parts.append("\n#### LLM 宏观摘要\n\n" + refined)
     raw_show = raw_md if len(raw_md) <= raw_max else raw_md[:raw_max] + "\n\n…（原文摘录已截断）"
-    if cfg.get("news_macro_section8_include_raw_excerpt", True):
-        parts.append("\n#### 语料摘录（⑧ 独立检索）\n\n" + raw_show)
-    elif not refined:
-        parts.append("\n#### 语料摘录（⑧ 独立检索）\n\n" + raw_show)
+    parts.append("\n#### 语料摘录（⑧ 独立检索）\n\n" + raw_show)
     return "".join(parts)
 
 
@@ -965,7 +959,7 @@ def get_tushare_news(
     """八项大模型语料：沪深 e互动、国家政策库、长篇/短讯新闻、公告、研报与 **⑧ 宏观向量专题**（均为 A 股 ``ts_code`` 路径下除 ⑧ 外按标的）。
 
     - **国家政策库**为部委公开法规，**不是按代码的个股新闻**。
-    - **④ 长篇 / ⑤ 短讯**：启用 Qdrant 时，对标的与 **DeepSeek 给出的至多 5 个竞品** 各做一次短 query 向量检索后合并；
+    - **④ 长篇 / ⑤ 短讯**：启用 Qdrant 时，对标的与 **DeepSeek 给出的至多 3 个竞品** 各做一次短 query 向量检索后合并；
       否则从 Tushare 拉取后经 **quick LLM 分批语义筛选**（可缓存）。
       关闭方式：配置 ``news_llm_filter_long_short=False`` 或环境变量 ``TRADINGAGENTS_NEWS_LLM_FILTER=0``，
       此时退回 **仅代码/简称** 子串匹配（仍不使用行业名匹配）。
@@ -974,6 +968,28 @@ def get_tushare_news(
     - **⑧ 宏观分析**：在开启 Qdrant 时，使用 **与 ④⑤ 不同的专用检索词** 做全市场向量检索；**时间窗与 ④⑤ 一致**（``news_long_short_lookback_days`` 与用户 ``start_date``/``end_date`` 相交，默认最多回看 30 天至 ``end_date``），可选 quick LLM 摘要；不混入 ④⑤ 语料。
     - 无法解析为 A 股代码时（如美股、港股代码），返回 ``npr`` + 新闻降级结果（无 e互动 / 公告 / 个股研报）；⑧ 仍按与 ④⑤ 相同规则的时间窗尝试（若已开 Qdrant）。
     """
+    cfg = get_config()
+    cache_key = _news_tool_cache_key(
+        "get_news",
+        {
+            "ticker": str(ticker).strip().upper(),
+            "start_date": start_date,
+            "end_date": end_date,
+            "news_long_short_lookback_days": int(cfg.get("news_long_short_lookback_days", 30)),
+            "news_qdrant_search_limit": int(cfg.get("news_qdrant_search_limit", 120)),
+            "news_raw_major_per_src": int(cfg.get("news_raw_major_per_src", 12)),
+            "news_raw_flash_per_src": int(cfg.get("news_raw_flash_per_src", 14)),
+            "news_macro_section8_enabled": bool(cfg.get("news_macro_section8_enabled", True)),
+            "news_macro_section8_search_limit": int(cfg.get("news_macro_section8_search_limit", 100)),
+            "qdrant_collection": (os.getenv("QDRANT_COLLECTION") or "financial_news"),
+            "schema": "run_cache_v1",
+        },
+    )
+    cached = _RUN_NEWS_TOOL_CACHE.get(cache_key)
+    if cached:
+        logger.info("get_news run-cache hit: ticker=%s %s~%s", ticker, start_date, end_date)
+        return cached
+
     win_start = f"{start_date} 00:00:00"
     win_end = f"{end_date} 23:59:59"
     d0, d1 = to_yyyymmdd(start_date), to_yyyymmdd(end_date)
@@ -983,7 +999,11 @@ def get_tushare_news(
 
     ts_code = resolve_tushare_equity(ticker)
     if not ts_code:
-        return _get_tushare_news_without_ts_code(ticker, start_date, end_date, win_start, win_end, broad_kw, ph)
+        body = _get_tushare_news_without_ts_code(
+            ticker, start_date, end_date, win_start, win_end, broad_kw, ph
+        )
+        _RUN_NEWS_TOOL_CACHE[cache_key] = body
+        return body
 
     stock_name = ""
     industry = ""
@@ -1017,7 +1037,6 @@ def get_tushare_news(
     npr_kw: list[str] = [industry] if industry and len(industry) >= 2 else []
     sec3 = _npr_policy_lines(irm_npr_rr_win_start, irm_npr_rr_win_end, npr_kw, max_rows=28)
 
-    cfg = get_config()
     lb = int(cfg.get("news_long_short_lookback_days", 30))
     win_45_start, win_45_end = _long_short_window_strs(start_date, end_date, lb)
 
@@ -1031,98 +1050,42 @@ def get_tushare_news(
     pool_m = len(major_srcs) * cap_m
     pool_f = len(flash_srcs) * cap_f
     search_limit = int(cfg.get("news_qdrant_search_limit", 120))
-    peer_n = int(cfg.get("news_llm_peer_context_max", 5))
+    peer_n = int(cfg.get("news_llm_peer_context_max", 3))
 
     from .peers_deepseek import fetch_validated_peers
 
-    if use_qdrant or not news_llm_filter_disabled():
-        peer_objs = fetch_validated_peers(
-            ts_code,
-            stock_name,
-            industry,
-            max_peers=peer_n,
-            curr_date=end_date,
-            use_cache=True,
-        )
-    else:
-        peer_objs = []
+    peer_objs = fetch_validated_peers(
+        ts_code,
+        stock_name,
+        industry,
+        max_peers=peer_n,
+        curr_date=end_date,
+        use_cache=True,
+    )
     peer_ts_codes = [p.ts_code for p in peer_objs]
     entities = [(ts_code, stock_name, industry)] + [(p.ts_code, p.name, p.industry) for p in peer_objs]
 
-    used_qdrant_45 = False
-    if use_qdrant:
-        try:
-            from .news_qdrant_retrieval import (
-                retrieve_merged_equity_markdown_lines,
-                retrieve_merged_equity_raw_items,
-            )
+    if not use_qdrant:
+        raise TushareVendorError(
+            "Qdrant-only news mode requires NEWS_LONG_SHORT_USE_QDRANT=1 "
+            "(or config `news_long_short_use_qdrant=True`)."
+        )
+    from .news_qdrant_retrieval import retrieve_merged_equity_markdown_lines
 
-            if news_llm_filter_disabled():
-                sec4, sec5 = retrieve_merged_equity_markdown_lines(
-                    entities=entities,
-                    win_start=win_45_start,
-                    win_end=win_45_end,
-                    pool_major=pool_m,
-                    pool_flash=pool_f,
-                    max_major_lines=45,
-                    max_flash_lines=50,
-                    content_major_max=cm,
-                    content_flash_max=cf,
-                    search_limit=search_limit,
-                    per_route_limit=None,
-                    match_fn=match_code_or_name_only,
-                )
-            else:
-                raw_mf = retrieve_merged_equity_raw_items(
-                    entities=entities,
-                    win_start=win_45_start,
-                    win_end=win_45_end,
-                    cap_major=pool_m,
-                    cap_flash=pool_f,
-                    content_major_max=cm,
-                    content_flash_max=cf,
-                    search_limit=search_limit,
-                    per_route_limit=None,
-                )
-                sec4, sec5 = screen_long_short_news_with_llm(
-                    raw_items=raw_mf,
-                    focal_ticker=ticker,
-                    ts_code=ts_code,
-                    stock_name=stock_name,
-                    industry=industry,
-                    peer_ts_codes=peer_ts_codes,
-                    win_start=win_45_start,
-                    win_end=win_45_end,
-                )
-                sec4 = [sec4] if (sec4 or "").strip() else []
-                sec5 = [sec5] if (sec5 or "").strip() else []
-            used_qdrant_45 = True
-        except Exception as exc:
-            logger.warning("④⑤ Qdrant 检索失败，回退 Tushare：%s", exc)
-
-    if not used_qdrant_45:
-        if news_llm_filter_disabled():
-            sec4 = _major_news_lines(
-                win_45_start, win_45_end, match_code_or_name_only, major_srcs, per_src_cap=12
-            )
-            sec5 = _flash_news_lines(
-                win_45_start, win_45_end, match_code_or_name_only, flash_srcs, per_src_cap=15
-            )
-        else:
-            raw_m = _major_news_collect_raw(win_45_start, win_45_end, major_srcs, cap_m, content_max=cm)
-            raw_f = _flash_news_collect_raw(win_45_start, win_45_end, flash_srcs, cap_f, content_max=cf)
-            sec4, sec5 = screen_long_short_news_with_llm(
-                raw_items=raw_m + raw_f,
-                focal_ticker=ticker,
-                ts_code=ts_code,
-                stock_name=stock_name,
-                industry=industry,
-                peer_ts_codes=peer_ts_codes,
-                win_start=win_45_start,
-                win_end=win_45_end,
-            )
-            sec4 = [sec4] if (sec4 or "").strip() else []
-            sec5 = [sec5] if (sec5 or "").strip() else []
+    sec4, sec5 = retrieve_merged_equity_markdown_lines(
+        entities=entities,
+        win_start=win_45_start,
+        win_end=win_45_end,
+        pool_major=pool_m,
+        pool_flash=pool_f,
+        max_major_lines=45,
+        max_flash_lines=50,
+        content_major_max=cm,
+        content_flash_max=cf,
+        search_limit=search_limit,
+        per_route_limit=None,
+        match_fn=match_code_or_name_only,
+    )
 
     sec6 = _anns_d_lines(ts_code, irm_rr_d0, irm_rr_d1)
     sec7 = _research_report_lines(ts_code, industry, irm_rr_d0, irm_rr_d1)
@@ -1130,8 +1093,8 @@ def get_tushare_news(
 
     news_hdr = (
         f"窗口: {start_date} ~ {end_date} | ④⑤ 子窗: {win_45_start[:10]} ~ {win_45_end[:10]}（最长 {lb} 天）| "
-        f"④⑤ 数据源：{'**Qdrant** 向量库' if used_qdrant_45 else 'Tushare API'} | "
-        f"匹配/筛选：{'代码/简称子串（LLM 筛选已关闭）' if news_llm_filter_disabled() else 'LLM 语义筛选（已取消行业名子串匹配）'}"
+        "④⑤ 数据源：**Qdrant** 向量库 | "
+        "匹配/筛选：向量召回 + 代码/简称校验（无 LLM 二次筛选）"
         f" | ①②③⑥⑦：相对结束日 **{NEWS_IRM_NPR_REPORT_LOOKBACK_CAL_DAYS} 自然日**"
         f" | ⑧：{'Qdrant 宏观专题（与④⑤ **时间窗一致**、query 分离）' if sec8 else '（未生成：关闭 Qdrant 或 ``news_macro_section8_enabled`` 或未命中）'}"
     )
@@ -1163,7 +1126,9 @@ def get_tushare_news(
             "e互动仅覆盖上证/深证互动平台；``anns_d`` / ``research_report`` 需单独语料权限。"
             f"（公司简称：{stock_name or '未取到'}；行业：{industry or '未取到'}）"
         )
-    return "\n\n".join(blocks).strip()
+    body = "\n\n".join(blocks).strip()
+    _RUN_NEWS_TOOL_CACHE[cache_key] = body
+    return body
 
 
 def _get_tushare_news_without_ts_code(
@@ -1196,38 +1161,23 @@ def _get_tushare_news_without_ts_code(
     win_45_start, win_45_end = _long_short_window_strs(start_date, end_date, lb)
     from .news_qdrant_retrieval import news_long_short_use_qdrant, retrieve_markdown_loose
 
-    used_q45 = False
-    if news_long_short_use_qdrant(cfg):
-        try:
-            qtext = (raw or "") + " " + " ".join(str(k) for k in broad_kw[:24])
-            sec4, sec5 = retrieve_markdown_loose(
-                query_text=qtext,
-                win_start=win_start,
-                win_end=win_end,
-                cap_major=10,
-                cap_flash=12,
-                content_major_max=2200,
-                content_flash_max=1500,
-                search_limit=int(cfg.get("news_qdrant_search_limit", 120)),
-                match_fn=match_ticker_or_macro,
-            )
-            used_q45 = True
-        except Exception as exc:
-            logger.warning("④⑤ Qdrant（无 ts_code）失败，回退 Tushare：%s", exc)
-
-    if not used_q45:
-        major_srcs = ("新浪财经", "财联社", "第一财经", "华尔街见闻", "中证网", "同花顺")
-        flash_srcs = ("sina", "eastmoney", "10jqka", "cls", "yicai", "fenghuang", "jinrongjie", "wallstreetcn")
-        sec4 = _major_news_lines(win_start, win_end, match_ticker_or_macro, major_srcs, per_src_cap=10)
-        if not sec4:
-            sec4 = _major_news_lines(
-                win_start, win_end, lambda _t, _c: True, major_srcs, per_src_cap=5
-            )
-        sec5 = _flash_news_lines(win_start, win_end, match_ticker_or_macro, flash_srcs, per_src_cap=12)
-        if not sec5:
-            sec5 = _flash_news_lines(
-                win_start, win_end, lambda _t, _c: True, flash_srcs, per_src_cap=6
-            )
+    if not news_long_short_use_qdrant(cfg):
+        raise TushareVendorError(
+            "Qdrant-only news mode requires NEWS_LONG_SHORT_USE_QDRANT=1 "
+            "(or config `news_long_short_use_qdrant=True`)."
+        )
+    qtext = (raw or "") + " " + " ".join(str(k) for k in broad_kw[:24])
+    sec4, sec5 = retrieve_markdown_loose(
+        query_text=qtext,
+        win_start=win_start,
+        win_end=win_end,
+        cap_major=10,
+        cap_flash=12,
+        content_major_max=2200,
+        content_flash_max=1500,
+        search_limit=int(cfg.get("news_qdrant_search_limit", 120)),
+        match_fn=match_ticker_or_macro,
+    )
 
     blocks = [
         f"## Tushare 语料（未识别为 A 股）— `{ticker}`\n\n"
@@ -1266,13 +1216,37 @@ def get_tushare_global_news(
     **``npr`` 与研报抽样**：相对 ``curr_date``（即 ``end_date``）固定回溯 ``NEWS_IRM_NPR_REPORT_LOOKBACK_CAL_DAYS``（90）自然日；④⑤ 新闻仍使用 ``look_back_days``。
     互动问答、上市公司公告（``anns_d``）需 ``ts_code``，此处不调用；请对具体标的使用 ``get_tushare_news``。
     """
+    cfg = get_config()
+    cache_key = _news_tool_cache_key(
+        "get_global_news",
+        {
+            "curr_date": curr_date,
+            "look_back_days": int(look_back_days),
+            "limit": int(limit),
+            "news_long_short_lookback_days": int(cfg.get("news_long_short_lookback_days", 30)),
+            "news_qdrant_search_limit": int(cfg.get("news_qdrant_search_limit", 120)),
+            "news_macro_section8_enabled": bool(cfg.get("news_macro_section8_enabled", True)),
+            "news_macro_section8_search_limit": int(cfg.get("news_macro_section8_search_limit", 100)),
+            "qdrant_collection": (os.getenv("QDRANT_COLLECTION") or "financial_news"),
+            "schema": "run_cache_v1",
+        },
+    )
+    cached = _RUN_NEWS_TOOL_CACHE.get(cache_key)
+    if cached:
+        logger.info(
+            "get_global_news run-cache hit: curr_date=%s look_back_days=%s limit=%s",
+            curr_date,
+            look_back_days,
+            limit,
+        )
+        return cached
+
     curr = datetime.strptime(curr_date, "%Y-%m-%d")
     start = curr - timedelta(days=look_back_days)
     start_date = start.strftime("%Y-%m-%d")
     end_date = curr.strftime("%Y-%m-%d")
     win_start = f"{start_date} 00:00:00"
     win_end = f"{end_date} 23:59:59"
-    d0, d1 = to_yyyymmdd(start_date), to_yyyymmdd(end_date)
 
     broad_kw = macro_market_keywords()
 
@@ -1280,42 +1254,29 @@ def get_tushare_global_news(
         blob = f"{title} {content}"
         return any(k in blob for k in broad_kw)
 
-    major_srcs = ("新浪财经", "财联社", "第一财经", "华尔街见闻", "中证网", "同花顺")
-    flash_srcs = ("cls", "eastmoney", "wallstreetcn", "sina", "10jqka", "yicai", "fenghuang", "jinrongjie")
-
     per_major = max(6, min(20, limit // 4))
     per_flash = max(8, min(25, limit // 3))
     npr_w0, npr_w1, rr_d0_90, rr_d1_90 = _irm_npr_report_window_from_end(end_date)
     sec_npr = _npr_policy_lines(npr_w0, npr_w1, [], max_rows=max(30, min(80, limit)))
 
-    cfg = get_config()
     lb = int(cfg.get("news_long_short_lookback_days", 30))
     win_45_start, win_45_end = _long_short_window_strs(start_date, end_date, lb)
     from .news_qdrant_retrieval import news_long_short_use_qdrant, retrieve_global_markdown
 
-    used_q45 = False
-    if news_long_short_use_qdrant(cfg):
-        try:
-            sec_major, sec_flash = retrieve_global_markdown(
-                win_start=win_start,
-                win_end=win_end,
-                per_major=per_major,
-                per_flash=per_flash,
-                limit=limit,
-                match_fn=match_broad,
-                broad_kw=broad_kw,
-            )
-            used_q45 = True
-        except Exception as exc:
-            logger.warning("全局 ④⑤ Qdrant 失败，回退 Tushare：%s", exc)
-
-    if not used_q45:
-        sec_major = _major_news_lines(
-            win_start, win_end, match_broad, major_srcs, per_src_cap=per_major
+    if not news_long_short_use_qdrant(cfg):
+        raise TushareVendorError(
+            "Qdrant-only news mode requires NEWS_LONG_SHORT_USE_QDRANT=1 "
+            "(or config `news_long_short_use_qdrant=True`)."
         )
-        sec_flash = _flash_news_lines(
-            win_start, win_end, match_broad, flash_srcs, per_src_cap=per_flash
-        )
+    sec_major, sec_flash = retrieve_global_markdown(
+        win_start=win_start,
+        win_end=win_end,
+        per_major=per_major,
+        per_flash=per_flash,
+        limit=limit,
+        match_fn=match_broad,
+        broad_kw=broad_kw,
+    )
     sec_rr = _research_report_global_lines(
         rr_d0_90, rr_d1_90, match_broad, max_rows=max(24, min(48, limit))
     )
@@ -1346,7 +1307,8 @@ def get_tushare_global_news(
     )
     body = "\n\n".join(blocks).strip()
     if len(body) > 120_000:
-        return body[:120_000] + "\n\n…（输出已截断）"
+        body = body[:120_000] + "\n\n…（输出已截断）"
+    _RUN_NEWS_TOOL_CACHE[cache_key] = body
     return body
 
 

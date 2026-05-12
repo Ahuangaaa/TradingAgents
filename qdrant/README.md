@@ -66,7 +66,7 @@ flowchart LR
 6. **Qdrant**：建集合与索引、**可多并发 upsert 批次**（`INGEST_UPSERT_CONCURRENCY`）、可选按 `pub_ts` 删早于 30 天的点。
 
 
-TradingAgents 侧 **④⑤** 对「标的 + 至多 5 个竞品」**每主体一次**短 query 向量检索，结果按 point id **合并去重**（取 max score）；**⑧ 宏观**将宏观词表切段多路检索后同样合并。依赖 `DASHSCOPE_API_KEY`（嵌入）与 Qdrant 服务。
+TradingAgents 侧 **④⑤** 对「标的 + 至多 3 个竞品」**每主体一次**短 query 向量检索，结果按 point id **合并去重**（取 max score）；**⑧ 宏观**将宏观词表切段多路检索后同样合并。依赖 `DASHSCOPE_API_KEY`（嵌入）与 Qdrant 服务。
 
 默认集合名 **`financial_news`**（与 `test.py` 的 `news_collection` 分离，避免误删测试数据）。可通过 `QDRANT_COLLECTION` 覆盖。
 

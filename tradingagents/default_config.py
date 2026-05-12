@@ -64,7 +64,7 @@ DEFAULT_CONFIG = {
     "news_llm_filter_use_cache": True,
     "news_llm_filter_batch_size": 28,
     "news_llm_filter_max_kept": 45,
-    "news_llm_peer_context_max": 5,
+    "news_llm_peer_context_max": 3,
     "news_long_short_lookback_days": 30,
     "news_raw_major_per_src": 12,
     "news_raw_flash_per_src": 14,
