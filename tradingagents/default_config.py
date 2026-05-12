@@ -73,7 +73,8 @@ DEFAULT_CONFIG = {
     # ④⑤ from Qdrant (not Tushare major_news/news) when True or NEWS_LONG_SHORT_USE_QDRANT=1
     "news_long_short_use_qdrant": True,
     "news_qdrant_search_limit": 120,
-    "news_qdrant_filter_by_ticker": False,
+    "news_qdrant_per_route_limit": 40,
+    "news_macro_vector_terms_per_query": 12,
     # ⑧ 宏观向量专题（专用检索词 + 可选 LLM；与 ④⑤ query 分离）
     "news_macro_section8_enabled": True,
     "news_macro_section8_search_limit": 100,

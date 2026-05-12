@@ -248,32 +248,6 @@ def _long_short_window_strs(start_date: str, end_date: str, lookback_days: int) 
     return ws, we
 
 
-def _peer_ts_codes_for_news(ts_code: str, industry: str, end_date: str, max_n: int) -> list[str]:
-    """Top same-industry peers by ``total_mv`` on ``end_date`` (for LLM screening context)."""
-    ind = (industry or "").strip()
-    if not ind or len(ind) < 2:
-        return []
-    peers = _try_pro_call(
-        "stock_basic",
-        exchange="",
-        list_status="L",
-        fields="ts_code",
-        industry=ind,
-    )
-    if peers is None or peers.empty:
-        return []
-    peers = peers[peers["ts_code"].astype(str) != str(ts_code)].copy()
-    if peers.empty:
-        return []
-    td = to_yyyymmdd(end_date)
-    db = _try_pro_call("daily_basic", trade_date=td, fields="ts_code,total_mv")
-    if db is not None and not db.empty:
-        peers = peers.merge(db, on="ts_code", how="left")
-        peers["total_mv"] = pd.to_numeric(peers["total_mv"], errors="coerce")
-        peers = peers.sort_values("total_mv", ascending=False, na_position="last")
-    return [str(x) for x in peers["ts_code"].head(int(max_n)).tolist()]
-
-
 def _major_news_collect_raw(
     start_win: str,
     end_win: str,
@@ -759,24 +733,24 @@ def get_tushare_industry_peers(
     ticker: Annotated[str, "ticker symbol of the focal A-share company"],
     curr_date: Annotated[
         str,
-        "Optional YYYY-mm-dd trading date used to sort peers by total_mv from daily_basic.",
+        "Optional YYYY-mm-dd cache key for peer list; does not change model ranking.",
     ] = None,
     max_peers: Annotated[int, "Maximum number of peer rows (excluding focal) to return"] = 8,
 ) -> str:
-    """List **same-industry** listed A-shares from ``stock_basic``, excluding the focal name.
+    """List **business competitors** as A-shares via **DeepSeek** + ``stock_basic`` validation.
 
-    When ``curr_date`` is set, merges ``daily_basic`` for that ``trade_date`` (full-universe
-    call) so peers are sorted by ``total_mv`` descending when available.
+    Not the old Tushare same-``industry`` universe; peers are model-selected then verified.
     """
+    from .peers_deepseek import fetch_validated_peers
+
     ts_code = resolve_tushare_equity(ticker)
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if not ts_code:
         return (
-            "# Industry peers (Tushare)\n\n"
+            "# Listed competitors (DeepSeek + Tushare validation)\n\n"
             f"_Retrieved: {stamp}_\n\n"
             f"Cannot resolve `{ticker}` as an A-share ts_code (use 6-digit .SH/.SZ/.BJ).\n"
-            "For non-A-share competitors, name tickers from filings or official IR and use "
-            "`get_news` / `get_fundamentals` where applicable.\n"
+            "For non-A-share competitors, name tickers from filings or official IR.\n"
         )
 
     focal = _try_pro_call(
@@ -787,7 +761,7 @@ def get_tushare_industry_peers(
     )
     if focal is None or focal.empty:
         return (
-            f"# Industry peers (Tushare) for {ts_code}\n\n"
+            f"# Listed competitors for {ts_code}\n\n"
             f"_Retrieved: {stamp}_\n\n"
             "`stock_basic` returned no data for the focal symbol.\n"
         )
@@ -795,82 +769,41 @@ def get_tushare_industry_peers(
     row0 = focal.iloc[0]
     industry = str(row0.get("industry") or "").strip()
     focal_name = str(row0.get("name") or "").strip()
-    if not industry:
-        return (
-            f"# Industry peers for {ts_code} ({focal_name})\n\n"
-            f"_Retrieved: {stamp}_\n\n"
-            "Tushare `industry` is empty for this name — cannot auto-list same-industry peers.\n"
-            "Identify competitors from annual reports or sector research, then query by ticker.\n"
-        )
 
-    peers = _try_pro_call(
-        "stock_basic",
-        exchange="",
-        list_status="L",
-        fields="ts_code,symbol,name,industry,market,area,list_date",
-        industry=industry,
+    cap = max(1, min(int(max_peers) if max_peers else 8, 12))
+    peers = fetch_validated_peers(
+        ts_code,
+        focal_name,
+        industry,
+        max_peers=cap,
+        curr_date=curr_date,
+        use_cache=True,
     )
-    if peers is None or peers.empty:
-        return (
-            f"# Industry peers — {industry}\n\n"
-            f"_Focal: {ts_code} {focal_name} · Retrieved: {stamp}_\n\n"
-            f"No rows returned for `industry={industry}`.\n"
-        )
-
-    peers = peers[peers["ts_code"].astype(str) != ts_code].copy()
-    if peers.empty:
-        return (
-            f"# Industry peers — {industry}\n\n"
-            f"_Focal: {ts_code} {focal_name} · Retrieved: {stamp}_\n\n"
-            "No other listed names share this exact `stock_basic.industry` value.\n"
-        )
-
-    if curr_date:
-        td = to_yyyymmdd(curr_date)
-        db = _try_pro_call(
-            "daily_basic",
-            trade_date=td,
-            fields="ts_code,total_mv,circ_mv,turnover_rate,volume_ratio",
-        )
-        if db is not None and not db.empty:
-            peers = peers.merge(
-                db,
-                on="ts_code",
-                how="left",
-            )
-            if "total_mv" in peers.columns:
-                peers["total_mv"] = pd.to_numeric(peers["total_mv"], errors="coerce")
-                peers = peers.sort_values("total_mv", ascending=False, na_position="last")
-        else:
-            peers = peers.sort_values("name", ascending=True, na_position="last")
-    else:
-        peers = peers.sort_values("name", ascending=True, na_position="last")
-
-    cap = max(1, min(int(max_peers) if max_peers else 8, 80))
-    peers = peers.head(cap)
-
-    table = _df_to_markdown_table(peers)
     note = (
-        f"Focal: **{focal_name}** (`{ts_code}`) · Tushare industry: **{industry}**. "
-        f"Showing up to **{cap}** peers (focal excluded). "
-        "Pick **3–5** closest business comps for deep `get_news` / `get_fundamentals` pulls.\n\n"
+        f"Focal: **{focal_name}** (`{ts_code}`) · Tushare industry field: **{industry or '（空）'}**. "
+        f"Up to **{cap}** **model-selected** A-share competitors (codes verified via `stock_basic`). "
+        "Use **3–5** for `get_news` / `get_fundamentals` if fewer are returned.\n\n"
     )
-    if curr_date:
-        note += (
-            f"Sorted using `daily_basic` for **trade_date** `{to_yyyymmdd(curr_date)}` "
-            "when `total_mv` was available; otherwise original order / name sort applies.\n\n"
-        )
-    else:
-        note += (
-            "No `curr_date` passed — peers sorted alphabetically by name. "
-            "Pass **analysis / trade date** as `curr_date` to sort by market cap.\n\n"
+    if not peers:
+        return (
+            "# Listed competitors (DeepSeek + Tushare validation)\n\n"
+            f"_Retrieved: {stamp}_\n\n"
+            + note
+            + "No validated peer rows (check API keys: DEEPSEEK / NEWS_TAG_LLM_* or PEER_LLM_*).\n"
         )
 
+    lines = [
+        "| ts_code | name | industry |",
+        "| --- | --- | --- |",
+    ]
+    for p in peers:
+        lines.append(f"| {p.ts_code} | {p.name} | {p.industry} |")
     return (
-        f"# Same-industry listed peers (Tushare)\n\n"
+        "# Listed competitors (DeepSeek + Tushare validation)\n\n"
         f"_Retrieved: {stamp}_\n\n"
         + note
-        + table
+        + "\n"
+        + "\n".join(lines)
         + "\n"
     )
 
@@ -1007,8 +940,8 @@ def get_tushare_news(
     """八项大模型语料：沪深 e互动、国家政策库、长篇/短讯新闻、公告、研报与 **⑧ 宏观向量专题**（均为 A 股 ``ts_code`` 路径下除 ⑧ 外按标的）。
 
     - **国家政策库**为部委公开法规，**不是按代码的个股新闻**。
-    - **④ 长篇 / ⑤ 短讯**：默认 **不做标题/正文与行业名的子串匹配**；在「用户时间窗 ∩ 最近 N 天（默认 30）」内
-      无过滤拉取原始条目，经 **quick LLM 分批语义筛选** 后写入报告（可缓存）。
+    - **④ 长篇 / ⑤ 短讯**：启用 Qdrant 时，对标的与 **DeepSeek 给出的至多 5 个竞品** 各做一次短 query 向量检索后合并；
+      否则从 Tushare 拉取后经 **quick LLM 分批语义筛选**（可缓存）。
       关闭方式：配置 ``news_llm_filter_long_short=False`` 或环境变量 ``TRADINGAGENTS_NEWS_LLM_FILTER=0``，
       此时退回 **仅代码/简称** 子串匹配（仍不使用行业名匹配）。
     - **⑥ 公告**：``anns_d`` 按 ``ts_code`` 与日期窗拉取；**⑦ 研报**：``research_report`` 个股研报 + 可选行业研报（``ind_name`` 与库内一致时才有行业命中）。
@@ -1071,27 +1004,35 @@ def get_tushare_news(
     pool_m = len(major_srcs) * cap_m
     pool_f = len(flash_srcs) * cap_f
     search_limit = int(cfg.get("news_qdrant_search_limit", 120))
-    ts_filter = ts_code if cfg.get("news_qdrant_filter_by_ticker", False) else None
     peer_n = int(cfg.get("news_llm_peer_context_max", 5))
+
+    from .peers_deepseek import fetch_validated_peers
+
     if use_qdrant or not news_llm_filter_disabled():
-        peer_codes = _peer_ts_codes_for_news(ts_code, industry, end_date, peer_n)
+        peer_objs = fetch_validated_peers(
+            ts_code,
+            stock_name,
+            industry,
+            max_peers=peer_n,
+            curr_date=end_date,
+            use_cache=True,
+        )
     else:
-        peer_codes = []
+        peer_objs = []
+    peer_ts_codes = [p.ts_code for p in peer_objs]
+    entities = [(ts_code, stock_name, industry)] + [(p.ts_code, p.name, p.industry) for p in peer_objs]
 
     used_qdrant_45 = False
     if use_qdrant:
         try:
             from .news_qdrant_retrieval import (
-                retrieve_markdown_lines_equity,
-                retrieve_raw_items_equity,
+                retrieve_merged_equity_markdown_lines,
+                retrieve_merged_equity_raw_items,
             )
 
             if news_llm_filter_disabled():
-                sec4, sec5 = retrieve_markdown_lines_equity(
-                    ts_code=ts_code,
-                    stock_name=stock_name,
-                    industry=industry,
-                    peer_ts_codes=peer_codes,
+                sec4, sec5 = retrieve_merged_equity_markdown_lines(
+                    entities=entities,
                     win_start=win_45_start,
                     win_end=win_45_end,
                     pool_major=pool_m,
@@ -1101,15 +1042,12 @@ def get_tushare_news(
                     content_major_max=cm,
                     content_flash_max=cf,
                     search_limit=search_limit,
-                    ts_code_filter=ts_filter,
+                    per_route_limit=None,
                     match_fn=match_code_or_name_only,
                 )
             else:
-                raw_mf = retrieve_raw_items_equity(
-                    ts_code=ts_code,
-                    stock_name=stock_name,
-                    industry=industry,
-                    peer_ts_codes=peer_codes,
+                raw_mf = retrieve_merged_equity_raw_items(
+                    entities=entities,
                     win_start=win_45_start,
                     win_end=win_45_end,
                     cap_major=pool_m,
@@ -1117,7 +1055,7 @@ def get_tushare_news(
                     content_major_max=cm,
                     content_flash_max=cf,
                     search_limit=search_limit,
-                    ts_code_filter=ts_filter,
+                    per_route_limit=None,
                 )
                 sec4, sec5 = screen_long_short_news_with_llm(
                     raw_items=raw_mf,
@@ -1125,7 +1063,7 @@ def get_tushare_news(
                     ts_code=ts_code,
                     stock_name=stock_name,
                     industry=industry,
-                    peer_ts_codes=peer_codes,
+                    peer_ts_codes=peer_ts_codes,
                     win_start=win_45_start,
                     win_end=win_45_end,
                 )
@@ -1152,7 +1090,7 @@ def get_tushare_news(
                 ts_code=ts_code,
                 stock_name=stock_name,
                 industry=industry,
-                peer_ts_codes=peer_codes,
+                peer_ts_codes=peer_ts_codes,
                 win_start=win_45_start,
                 win_end=win_45_end,
             )

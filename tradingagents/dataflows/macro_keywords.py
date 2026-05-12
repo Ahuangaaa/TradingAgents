@@ -95,6 +95,22 @@ def macro_market_keywords() -> tuple[str, ...]:
 
 
 def macro_vector_search_query_text() -> str:
-    """⑧ 宏观专题：Qdrant 向量 query —— 与 ``macro_market_keywords`` 同一套词，避免两套宏观词不一致。"""
+    """⑧ 宏观专题（单条长 query，兼容旧逻辑）：与 ``macro_market_keywords`` 同源。"""
     terms = macro_market_keywords()
     return "宏观经济与资本市场环境：" + " ".join(terms)
+
+
+def macro_vector_search_query_texts(*, terms_per_chunk: int = 12) -> list[str]:
+    """多路宏观向量检索：将 ``macro_market_keywords`` 切段，避免单条 query 过长、主题稀释。
+
+    ``terms_per_chunk``：每段最多多少个关键词（实现时可由配置覆盖）。
+    """
+    terms = [str(t).strip() for t in macro_market_keywords() if str(t).strip()]
+    if not terms:
+        return [macro_vector_search_query_text()]
+    n = max(4, min(40, int(terms_per_chunk)))
+    out: list[str] = []
+    for i in range(0, len(terms), n):
+        chunk = terms[i : i + n]
+        out.append("宏观经济与资本市场环境：" + " ".join(chunk))
+    return out if len(out) >= 1 else [macro_vector_search_query_text()]

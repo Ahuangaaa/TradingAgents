@@ -1,24 +1,22 @@
-"""④⑤ / ⑧ 语料：从 Qdrant 向量库检索（替代或补充 Tushare ``major_news`` / ``news`` 拉取）。
+"""Qdrant 新闻向量检索：统一 ``vector_search_one`` + ``multi_search_merge``。
 
-- **④⑤**：个股/行业/宽松 query 等（见 ``retrieve_*_equity``、``retrieve_markdown_loose``、``retrieve_global_markdown``）。
-- **⑧**：宏观专题专用 query（``retrieve_macro_section_markdown``），与 ④⑤ 检索词分离。
-
-依赖：``qdrant-client``、与入库一致的嵌入（``qdrant/news_embed.py``：DashScope ``text-embedding-v4``）。
-启用：配置 ``news_long_short_use_qdrant`` 或环境变量 ``NEWS_LONG_SHORT_USE_QDRANT=1``。
+- **④⑤**：按「标的 + 竞争对手」每主体一条短 query，多路检索后按 point id 合并（取 max score）。
+- **⑧ / 全局**：宏观词表切段多路检索，同一合并逻辑。
+- 依赖 ``qdrant/news_embed.py``（DashScope ``text-embedding-v4``）。
 """
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
-import sys
 from pathlib import Path
 from typing import Any, Callable
 
 import pandas as pd
 
 from tradingagents.dataflows.config import get_config
-from tradingagents.dataflows.macro_keywords import macro_vector_search_query_text
+from tradingagents.dataflows.macro_keywords import macro_vector_search_query_texts
 
 logger = logging.getLogger(__name__)
 
@@ -27,34 +25,40 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _ensure_qdrant_on_path() -> None:
-    qdir = _repo_root() / "qdrant"
-    s = str(qdir)
-    if s not in sys.path:
-        sys.path.insert(0, s)
-
-
 def _import_embed_query_texts():
-    _ensure_qdrant_on_path()
-    try:
-        from news_embed import embed_query_texts
-    except ImportError as exc:  # noqa: BLE001
+    """Load ``qdrant/news_embed.py`` by absolute path."""
+    path = _repo_root() / "qdrant" / "news_embed.py"
+    if not path.is_file():
         raise RuntimeError(
-            "Qdrant news retrieval requires the repo ``qdrant/`` package on ``sys.path`` and "
-            "``dashscope`` (see pyproject optional ``qdrant-news`` / ``qdrant/requirements-ingest.txt``)."
+            "Qdrant news retrieval requires ``qdrant/news_embed.py`` next to the tradingagents package "
+            f"(missing {path})."
+        )
+    spec = importlib.util.spec_from_file_location("tradingagents_qdrant_news_embed", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load embedding module from {path}")
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except ImportError as exc:
+        raise RuntimeError(
+            "Qdrant news retrieval requires embedding deps (see pyproject optional ``qdrant-news`` "
+            "and ``qdrant/requirements-ingest.txt``)."
         ) from exc
-    return embed_query_texts
+    fn = getattr(mod, "embed_query_texts", None)
+    if not callable(fn):
+        raise RuntimeError(f"{path} does not define callable embed_query_texts")
+    return fn
 
 
 def _import_qdrant_client():
     try:
         from qdrant_client import QdrantClient
-        from qdrant_client.http.models import FieldCondition, Filter, MatchAny, MatchValue, Range
+        from qdrant_client.http.models import FieldCondition, Filter, Range
     except ImportError as exc:  # noqa: BLE001
         raise RuntimeError(
             "Install qdrant-client (e.g. pip install tradingagents[qdrant-news] or pip install qdrant-client)."
         ) from exc
-    return QdrantClient, FieldCondition, Filter, MatchAny, MatchValue, Range
+    return QdrantClient, FieldCondition, Filter, Range
 
 
 def news_long_short_use_qdrant(cfg: dict | None = None) -> bool:
@@ -123,36 +127,40 @@ def _hit_to_markdown(payload: dict[str, Any], *, content_max: int) -> str:
     return f"### [{src}] {pub}\n{title}\n{body}\n"
 
 
-def search_news_qdrant(
+def build_entity_query(ts_code: str, stock_name: str, industry: str) -> str:
+    """单主体短 query：代码 + 名称 + 行业（嵌入后与正文同空间）。"""
+    ind = (industry or "").strip() or "未知"
+    nm = (stock_name or "").strip()
+    tc = (ts_code or "").strip()
+    return (
+        f"A股 {tc} {nm}，所属行业：{ind}。"
+        "检索与该上市公司相关的财经新闻、公告要点、政策与舆情。"
+    )
+
+
+def vector_search_one(
     *,
     query_text: str,
     win_start: str,
     win_end: str,
     limit: int,
-    ts_code: str | None = None,
 ) -> list[Any]:
-    """Return Qdrant search hits (``ScoredPoint``)."""
+    """单次向量检索：仅 ``pub_ts`` 时间窗口，不做 ticker payload 过滤。"""
     cfg = get_config()
-    _, FieldCondition, Filter, MatchAny, MatchValue, Range = _import_qdrant_client()
+    _, FieldCondition, Filter, Range = _import_qdrant_client()
     embed_query_texts = _import_embed_query_texts()
     vec = embed_query_texts([query_text])
     if not vec or not vec[0]:
         raise RuntimeError("embed_query_texts returned empty vector")
     lo, hi = _pub_ts_range(win_start, win_end)
-    must: list[Any] = [
-        FieldCondition(
-            key="pub_ts",
-            range=Range(gte=float(lo), lte=float(hi)),
-        )
-    ]
-    if ts_code:
-        must.append(
+    flt = Filter(
+        must=[
             FieldCondition(
-                key="tickers",
-                match=MatchAny(any=[MatchValue(value=str(ts_code).strip())]),
+                key="pub_ts",
+                range=Range(gte=float(lo), lte=float(hi)),
             )
-        )
-    flt = Filter(must=must)
+        ]
+    )
     client = _make_client()
     try:
         hits = client.search(
@@ -167,12 +175,29 @@ def search_news_qdrant(
     return list(hits)
 
 
-def retrieve_raw_items_equity(
+def multi_search_merge(
+    hit_groups: list[list[Any]],
     *,
-    ts_code: str,
-    stock_name: str,
-    industry: str,
-    peer_ts_codes: list[str],
+    top_n: int | None,
+) -> list[Any]:
+    """多路 ``ScoredPoint`` 合并：同一 ``id`` 保留 **最高分**。"""
+    best: dict[Any, tuple[float, Any]] = {}
+    for group in hit_groups:
+        for h in group:
+            sid = getattr(h, "id", None)
+            sc = float(getattr(h, "score", 0.0) or 0.0)
+            prev = best.get(sid)
+            if prev is None or sc > prev[0]:
+                best[sid] = (sc, h)
+    merged = [pair[1] for pair in sorted(best.values(), key=lambda x: -x[0])]
+    if top_n is not None and top_n >= 0:
+        merged = merged[: int(top_n)]
+    return merged
+
+
+def retrieve_merged_equity_raw_items(
+    *,
+    entities: list[tuple[str, str, str]],
     win_start: str,
     win_end: str,
     cap_major: int,
@@ -180,26 +205,30 @@ def retrieve_raw_items_equity(
     content_major_max: int,
     content_flash_max: int,
     search_limit: int,
-    ts_code_filter: str | None,
+    per_route_limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Build ``raw_items`` for ``screen_long_short_news_with_llm`` from Qdrant."""
-    peer_bit = ", ".join(peer_ts_codes[:12]) if peer_ts_codes else ""
-    query_text = (
-        f"A股标的 {ts_code} {stock_name or ''} 行业背景:{industry or '未知'}。"
-        f"相关同业代码参考:{peer_bit}。"
-        "请检索与该上市公司及行业相关的财经新闻与政策舆情。"
-    )
-    hits = search_news_qdrant(
-        query_text=query_text,
-        win_start=win_start,
-        win_end=win_end,
-        limit=search_limit,
-        ts_code=ts_code_filter,
-    )
+    """④⑤：对每个主体一次 ``vector_search_one``，合并后拆成 major/flash 原始行（供 LLM 筛选）。"""
+    cfg = get_config()
+    pr = per_route_limit if per_route_limit is not None else int(cfg.get("news_qdrant_per_route_limit", 40))
+    route_lim = max(10, min(200, int(pr)))
+    if not entities:
+        return []
+    groups: list[list[Any]] = []
+    for ts_code, name, ind in entities:
+        qt = build_entity_query(ts_code, name, ind)
+        hits = vector_search_one(
+            query_text=qt,
+            win_start=win_start,
+            win_end=win_end,
+            limit=route_lim,
+        )
+        groups.append(hits)
+    merge_cap = max(int(search_limit), cap_major + cap_flash + 24)
+    merged_hits = multi_search_merge(groups, top_n=merge_cap)
 
     raw_major: list[dict[str, Any]] = []
     raw_flash: list[dict[str, Any]] = []
-    for h in hits:
+    for h in merged_hits:
         pl = h.payload or {}
         if not isinstance(pl, dict):
             continue
@@ -218,10 +247,10 @@ def retrieve_raw_items_equity(
         if len(raw_major) >= cap_major and len(raw_flash) >= cap_flash:
             break
     out = raw_major + raw_flash
-    cfg = get_config()
     logger.info(
-        "Qdrant ④⑤ equity: hits=%s kept_major=%s kept_flash=%s collection=%r",
-        len(hits),
+        "Qdrant ④⑤ equity merged: routes=%s hits_merged=%s kept_major=%s kept_flash=%s collection=%r",
+        len(entities),
+        len(merged_hits),
         len(raw_major),
         len(raw_flash),
         _collection_name(cfg),
@@ -229,12 +258,9 @@ def retrieve_raw_items_equity(
     return out
 
 
-def retrieve_markdown_lines_equity(
+def retrieve_merged_equity_markdown_lines(
     *,
-    ts_code: str,
-    stock_name: str,
-    industry: str,
-    peer_ts_codes: list[str],
+    entities: list[tuple[str, str, str]],
     win_start: str,
     win_end: str,
     pool_major: int,
@@ -244,15 +270,12 @@ def retrieve_markdown_lines_equity(
     content_major_max: int,
     content_flash_max: int,
     search_limit: int,
-    ts_code_filter: str | None,
+    per_route_limit: int | None,
     match_fn: Callable[[str, str], bool],
 ) -> tuple[list[str], list[str]]:
-    """Return (major_lines, flash_lines) for non-LLM ④⑤ with substring ``match_fn`` filter."""
-    raw = retrieve_raw_items_equity(
-        ts_code=ts_code,
-        stock_name=stock_name,
-        industry=industry,
-        peer_ts_codes=peer_ts_codes,
+    """非 LLM ④⑤：合并检索 + ``match_fn`` 子串过滤。"""
+    raw = retrieve_merged_equity_raw_items(
+        entities=entities,
         win_start=win_start,
         win_end=win_end,
         cap_major=pool_major,
@@ -260,7 +283,7 @@ def retrieve_markdown_lines_equity(
         content_major_max=content_major_max,
         content_flash_max=content_flash_max,
         search_limit=search_limit,
-        ts_code_filter=ts_code_filter,
+        per_route_limit=per_route_limit,
     )
     major_lines: list[str] = []
     flash_lines: list[str] = []
@@ -299,13 +322,12 @@ def retrieve_markdown_loose(
     search_limit: int,
     match_fn: Callable[[str, str], bool],
 ) -> tuple[list[str], list[str]]:
-    """No ts_code: semantic query + ``match_fn`` on payload."""
-    hits = search_news_qdrant(
+    """无 A 股代码时的单 query 检索 + ``match_fn``。"""
+    hits = vector_search_one(
         query_text=query_text,
         win_start=win_start,
         win_end=win_end,
         limit=search_limit,
-        ts_code=None,
     )
     major_lines: list[str] = []
     flash_lines: list[str] = []
@@ -359,16 +381,18 @@ def retrieve_macro_section_markdown(
     content_major_max: int,
     content_flash_max: int,
 ) -> tuple[list[str], list[str]]:
-    """⑧ 宏观专题：专用向量 query，不按个股过滤（与 ④⑤ ``retrieve_*_equity`` 分离）。"""
-    query_text = macro_vector_search_query_text()
-    lim = max(40, min(200, int(search_limit)))
-    hits = search_news_qdrant(
-        query_text=query_text,
-        win_start=win_start,
-        win_end=win_end,
-        limit=lim,
-        ts_code=None,
-    )
+    """⑧ 宏观：多路宏观词 query → merge → 长篇/快讯分行。"""
+    cfg = get_config()
+    chunk = int(cfg.get("news_macro_vector_terms_per_query", 12))
+    queries = macro_vector_search_query_texts(terms_per_chunk=chunk)
+    route_lim = max(40, min(200, int(search_limit)))
+    groups = [
+        vector_search_one(query_text=q, win_start=win_start, win_end=win_end, limit=route_lim)
+        for q in queries
+    ]
+    merge_cap = max(per_major + per_flash + 20, int(search_limit))
+    hits = multi_search_merge(groups, top_n=merge_cap)
+
     major_lines: list[str] = []
     flash_lines: list[str] = []
     for h in hits:
@@ -388,9 +412,9 @@ def retrieve_macro_section_markdown(
                 flash_lines.append(line)
         if len(major_lines) >= per_major and len(flash_lines) >= per_flash:
             break
-    cfg = get_config()
     logger.info(
-        "Qdrant ⑧ macro section: hits=%s kept_major=%s kept_flash=%s collection=%r",
+        "Qdrant ⑧ macro section: queries=%s hits_merged=%s kept_major=%s kept_flash=%s collection=%r",
+        len(queries),
         len(hits),
         len(major_lines),
         len(flash_lines),
@@ -409,28 +433,36 @@ def retrieve_global_markdown(
     match_fn: Callable[[str, str], bool],
     broad_kw: tuple[str, ...],
 ) -> tuple[list[str], list[str]]:
-    """Macro-style global ④⑤ from Qdrant."""
-    kw = [k for k in broad_kw if k and len(str(k)) >= 2][:24]
-    query_text = "宏观经济、资本市场、货币政策、行业景气与A股相关要闻：" + " ".join(str(x) for x in kw)
+    """全局 ④⑤：多路宏观词检索 + merge + ``broad_kw`` 命中过滤。"""
+    cfg = get_config()
+    chunk = int(cfg.get("news_macro_vector_terms_per_query", 12))
+    queries = macro_vector_search_query_texts(terms_per_chunk=chunk)
     search_lim = max(40, min(200, int(limit) * 3))
-    hits = search_news_qdrant(
-        query_text=query_text,
-        win_start=win_start,
-        win_end=win_end,
-        limit=search_lim,
-        ts_code=None,
-    )
+    route_lim = max(25, min(150, search_lim // max(len(queries), 1) + 20))
+    groups = [
+        vector_search_one(query_text=q, win_start=win_start, win_end=win_end, limit=route_lim)
+        for q in queries
+    ]
+    hits = multi_search_merge(groups, top_n=search_lim)
     major_lines: list[str] = []
     flash_lines: list[str] = []
     cm = 2200
     cf = 1500
+    kw_ok = [k for k in broad_kw if k and len(str(k)) >= 2]
+
+    def _match(title: str, content: str) -> bool:
+        blob = f"{title} {content}"
+        if match_fn(title, content):
+            return True
+        return any(k in blob for k in kw_ok)
+
     for h in hits:
         pl = h.payload or {}
         if not isinstance(pl, dict):
             continue
         title = str(pl.get("title", ""))
         content = str(pl.get("content", ""))
-        if not match_fn(title, content):
+        if not _match(title, content):
             continue
         ch = _hit_to_channel(pl)
         line = _hit_to_markdown(pl, content_max=cm if ch == "major_news" else cf)

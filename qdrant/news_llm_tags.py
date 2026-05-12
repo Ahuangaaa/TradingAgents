@@ -8,12 +8,15 @@ import logging
 import os
 import re
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pandas as pd
+
+from html_plain import extract_plain_from_html
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +176,7 @@ def _macro_keyword_fallback_row(row: dict[str, Any], *, body_chars: int) -> bool
     return False
 
 SYSTEM = """你是 A 股金融新闻结构化抽取助手。
+每条输入的正文 ``snippet`` **已在本程序中从 HTML 做本地处理**（去掉 ``script``/``style`` 块与标签，仅保留纯文本），你收到的是**纯文本**，**不要**输出或改写正文。
 对每条新闻输出 JSON 对象，字段：
 - "id": 与输入完全一致（字符串）
 - "tickers": A 股证券代码列表，元素必须是 ``000001.SZ`` / ``600519.SH`` / ``920001.BJ`` 形式；无法确定则 []
@@ -200,7 +204,7 @@ def _api_key() -> str:
 
 
 def _model() -> str:
-    return (os.getenv("NEWS_TAG_LLM_MODEL") or "deepseek-chat").strip()
+    return (os.getenv("NEWS_TAG_LLM_MODEL") or "deepseek-v4-flash").strip()
 
 
 def _parse_json_array(text: str) -> list[dict[str, Any]]:
@@ -245,6 +249,42 @@ def _normalize_tags(row: dict[str, Any]) -> dict[str, list[str]]:
     }
 
 
+def _snippet_chars_default() -> int:
+    raw = (os.getenv("NEWS_TAG_LLM_SNIPPET_CHARS") or "12000").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 12000
+    return max(800, min(32000, n))
+
+
+def _content_plain_max_chars() -> int:
+    raw = (os.getenv("NEWS_TAG_LLM_CONTENT_PLAIN_MAX") or "8000").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 8000
+    return max(500, min(32000, n))
+
+
+def _cap_plain_text(text: str) -> str:
+    """Length cap for stored article body (local HTML strip only)."""
+    plain = "\n".join(
+        " ".join(line.split())
+        for line in (text or "").splitlines()
+        if " ".join(line.split())
+    )
+    cap = _content_plain_max_chars()
+    if len(plain) > cap:
+        return plain[:cap].rstrip() + "…"
+    return plain
+
+
+def _normalize_llm_item(obj: dict[str, Any]) -> dict[str, list[str]]:
+    """Normalize tag lists from one model output object (no body text from the model)."""
+    return _normalize_tags(obj)
+
+
 def _tag_concurrency_default() -> int:
     raw = (os.getenv("NEWS_TAG_LLM_CONCURRENCY") or "4").strip()
     try:
@@ -252,6 +292,15 @@ def _tag_concurrency_default() -> int:
     except ValueError:
         n = 4
     return max(1, min(32, n))
+
+
+def _html_strip_concurrency_default() -> int:
+    raw = (os.getenv("NEWS_HTML_STRIP_CONCURRENCY") or "8").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 8
+    return max(1, min(64, n))
 
 
 def _llm_tag_one_batch(
@@ -263,7 +312,7 @@ def _llm_tag_one_batch(
     batch_idx: int,
     n_batches: int,
 ) -> tuple[int, dict[str, dict[str, list[str]]], int, int]:
-    """HTTP call for one batch; returns (start, stable_id -> tags, len(parsed), matched_count)."""
+    """HTTP call for one batch; returns (start, stable_id -> tags only, len(parsed), matched_count)."""
     lines = []
     for r in chunk:
         rid = str(r["stable_id"])
@@ -306,8 +355,7 @@ def _llm_tag_one_batch(
             rid = str(obj.get("id", "")).strip()
             if not rid:
                 continue
-            tags = _normalize_tags(obj)
-            id_to_tags[rid] = tags
+            id_to_tags[rid] = _normalize_llm_item(obj)
             matched += 1
         logger.info(
             "LLM tags: batch %s/%s done — parsed_objects=%s matched_stable_ids=%s",
@@ -325,12 +373,16 @@ def tag_news_dataframe(
     df: pd.DataFrame,
     *,
     rows_per_llm_call: int = 15,
-    content_chars: int = 800,
+    content_chars: int | None = None,
     tag_concurrency: int | None = None,
+    html_strip_concurrency: int | None = None,
 ) -> pd.DataFrame:
-    """Add columns tickers, industry_tags, concept_tags (list[str]) using batched LLM."""
+    """Add columns tickers, industry_tags, concept_tags (list[str]); ``content`` is local HTML strip only (no LLM body edit)."""
     if df.empty:
         return df
+
+    snippet_n = int(content_chars) if content_chars is not None else _snippet_chars_default()
+    hw = html_strip_concurrency if html_strip_concurrency is not None else _html_strip_concurrency_default()
 
     key = _api_key()
     if not key:
@@ -340,12 +392,31 @@ def tag_news_dataframe(
         df["industry_tags"] = [[] for _ in range(len(df))]
         df["concept_tags"] = [[] for _ in range(len(df))]
         recs = df.to_dict("records")
-        blob_chars = min(8000, max(int(content_chars), 2000))
-        macro_fb = 0
-        for r in recs:
+        blob_chars = min(8000, max(int(snippet_n), 2000))
+        t_strip = time.perf_counter()
+        contents = [str(r.get("content") or "") for r in recs]
+        if hw <= 1:
+            plains = [extract_plain_from_html(c) for c in contents]
+        else:
+            logger.info(
+                "HTML strip: parallel workers=%s (env NEWS_HTML_STRIP_CONCURRENCY or html_strip_concurrency)",
+                hw,
+            )
+            with ThreadPoolExecutor(max_workers=hw) as pool:
+                plains = list(pool.map(extract_plain_from_html, contents))
+        for r, plain in zip(recs, plains):
             r.setdefault("tickers", [])
             r.setdefault("industry_tags", [])
             r.setdefault("concept_tags", [])
+            r["content"] = _cap_plain_text(plain)
+        logger.info(
+            "HTML strip: done in %.2fs — %s rows (workers=%s)",
+            time.perf_counter() - t_strip,
+            len(recs),
+            hw,
+        )
+        macro_fb = 0
+        for r in recs:
             if _macro_keyword_fallback_row(r, body_chars=blob_chars):
                 macro_fb += 1
         if macro_fb:
@@ -355,22 +426,52 @@ def tag_news_dataframe(
             )
         return pd.DataFrame(recs)
 
+    content_chars = snippet_n
+
     n = len(df)
     n_batches = (n + rows_per_llm_call - 1) // rows_per_llm_call
-    logger.info(
-        "LLM tags: model=%r endpoint=%s rows=%s batch_size=%s (~%s HTTP calls)",
-        _model(),
-        _chat_url(),
-        n,
-        rows_per_llm_call,
-        n_batches,
-    )
 
     out_rows: list[dict[str, Any]] = df.to_dict("records")
     for r in out_rows:
         r.setdefault("tickers", [])
         r.setdefault("industry_tags", [])
         r.setdefault("concept_tags", [])
+
+    # --- [2/6] Parallel local HTML strip (ThreadPoolExecutor; order preserved via map) ---
+    t_strip = time.perf_counter()
+    contents = [str(r.get("content") or "") for r in out_rows]
+    if hw <= 1:
+        plains = [extract_plain_from_html(c) for c in contents]
+    else:
+        logger.info(
+            "HTML strip: parallel workers=%s (env NEWS_HTML_STRIP_CONCURRENCY or html_strip_concurrency)",
+            hw,
+        )
+        with ThreadPoolExecutor(max_workers=hw) as pool:
+            plains = list(pool.map(extract_plain_from_html, contents))
+    local_nonempty = sum(1 for p in plains if p.strip())
+    for r, plain in zip(out_rows, plains):
+        r["_pre_llm_plain"] = plain
+        r["content"] = plain
+    logger.info(
+        "HTML strip: done in %.2fs — non-empty body %s / %s rows (workers=%s)",
+        time.perf_counter() - t_strip,
+        local_nonempty,
+        len(out_rows),
+        hw,
+    )
+
+    # --- [3/6] Parallel DeepSeek chat/completions batches ---
+    t_llm = time.perf_counter()
+    logger.info(
+        "LLM tag: model=%r endpoint=%s rows=%s batch_size=%s snippet_chars=%s (~%s HTTP calls)",
+        _model(),
+        _chat_url(),
+        n,
+        rows_per_llm_call,
+        content_chars,
+        n_batches,
+    )
 
     id_to_idx = {str(r["stable_id"]): i for i, r in enumerate(out_rows)}
     workers = tag_concurrency if tag_concurrency is not None else _tag_concurrency_default()
@@ -430,6 +531,11 @@ def tag_news_dataframe(
                     out_rows[idx]["industry_tags"] = tags["industry_tags"]
                     out_rows[idx]["concept_tags"] = tags["concept_tags"]
 
+    # Final ``content`` is always local strip + length cap (DeepSeek does not edit body).
+    for r in out_rows:
+        local_base = r.pop("_pre_llm_plain", "") or ""
+        r["content"] = _cap_plain_text(str(local_base))
+
     # fill missing
     for r in out_rows:
         r.setdefault("tickers", [])
@@ -447,5 +553,9 @@ def tag_news_dataframe(
             macro_fb,
         )
 
-    logger.info("LLM tags: finished all batches (%s rows)", len(out_rows))
+    logger.info(
+        "LLM tag: DeepSeek batches finished in %.2fs — body remains local HTML strip only (%s rows)",
+        time.perf_counter() - t_llm,
+        len(out_rows),
+    )
     return pd.DataFrame(out_rows)

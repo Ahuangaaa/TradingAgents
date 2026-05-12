@@ -30,14 +30,15 @@ def get_industry_peers(
     ticker: Annotated[str, "focal ticker symbol (same as company_of_interest)"],
     curr_date: Annotated[
         str | None,
-        "YYYY-mm-dd analysis or trade date; used to sort peers by total_mv when daily_basic is available.",
+        "YYYY-mm-dd analysis or trade date; optional cache key for the peer list.",
     ] = None,
     max_peers: Annotated[int, "max peer rows to return (default 8)"] = 8,
 ) -> str:
     """
-    List same-industry listed A-share peers from Tushare ``stock_basic`` (focal excluded).
+    List **model-selected** listed A-share competitors (DeepSeek + ``stock_basic`` validation).
 
     Call **before** deep `get_news` or `get_fundamentals` on competitors so tickers are explicit.
+    Not a raw Tushare same-industry universe; peers are business comps chosen by the model then verified.
 
     Official docs: stock_basic — https://tushare.pro/wctapi/documents/25.md
     """

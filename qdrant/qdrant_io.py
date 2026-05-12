@@ -76,8 +76,14 @@ def upsert_batches(
     points: Iterable[PointStruct],
     *,
     batch_size: int = 500,
+    max_workers: int = 1,
 ) -> int:
-    """Upsert in chunks; returns total points written."""
+    """Upsert in chunks; returns total points written.
+
+    When ``max_workers`` > 1, upload multiple batches concurrently (same collection).
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     try:
         from tqdm import tqdm
     except ImportError:
@@ -85,17 +91,34 @@ def upsert_batches(
             return x
 
     plist = list(points)
+    if not plist:
+        logger.info("Qdrant: upsert — 0 points; skip")
+        return 0
+    chunks = [plist[i : i + batch_size] for i in range(0, len(plist), batch_size)]
     logger.info(
-        "Qdrant: upsert starting — %s points into %r, batch_size=%s",
+        "Qdrant: upsert starting — %s points into %r, %s batches of up to %s (max_workers=%s)",
         len(plist),
         collection_name,
+        len(chunks),
         batch_size,
+        max_workers,
     )
     total = 0
-    for i in tqdm(range(0, len(plist), batch_size), desc="qdrant upsert", unit="batch"):
-        batch = plist[i : i + batch_size]
+    workers = max(1, min(int(max_workers), len(chunks)))
+
+    def _one(batch: list[PointStruct]) -> int:
         client.upsert(collection_name=collection_name, points=batch, wait=True)
-        total += len(batch)
+        return len(batch)
+
+    if workers <= 1 or len(chunks) == 1:
+        for ch in tqdm(chunks, desc="qdrant upsert", unit="batch"):
+            total += _one(ch)
+    else:
+        logger.info("Qdrant: parallel upsert — workers=%s over %s batches", workers, len(chunks))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_one, ch) for ch in chunks]
+            for fut in as_completed(futs):
+                total += fut.result()
     logger.info("Upserted %s points into %s", total, collection_name)
     return total
 

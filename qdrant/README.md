@@ -50,16 +50,23 @@ python qdrant\test.py
 ```mermaid
 flowchart LR
   Tushare[Tushare_fetch]
-  DeepSeekTag[DeepSeek_chat]
-  DashEmbed[DashScope_embed_v4]
-  Qdrant[Qdrant_upsert]
-  Tushare --> DeepSeekTag --> DashEmbed --> Qdrant
+  HtmlStrip[Parallel_HTML_strip]
+  DeepSeekTag[Parallel_DeepSeek_tag]
+  BuildStr[Build_embed_strings]
+  DashEmbed[Parallel_DashScope_embed_v4]
+  Qdrant[Qdrant_parallel_upsert]
+  Tushare --> HtmlStrip --> DeepSeekTag --> BuildStr --> DashEmbed --> Qdrant
 ```
 
 1. **Tushare**：多源 `news` / `major_news`，去重，`stable_id`（见 `news_fetch.py`）。  
-2. **DeepSeek**：OpenAI 兼容 `POST .../chat/completions`，批量 JSON 抽取 `tickers` / `industry_tags` / `concept_tags`（见 `news_llm_tags.py`）。  
-3. **向量**：阿里云 **DashScope** **`text-embedding-v4`**（线上），对标题+正文片段调用 `TextEmbedding.call`；单次最多 **10** 条文本，脚本内自动分批（见 `news_embed.py`）。**无需**本机 PyTorch / sentence-transformers。  
-4. **Qdrant**：建集合与 payload 索引、每批 upsert、可选按 `pub_ts` 删除早于 30 天的点。
+2. **本地 HTML**：``ThreadPool`` 并行剥标签（`NEWS_HTML_STRIP_CONCURRENCY`，见 `html_plain.py`）。  
+3. **DeepSeek**：OpenAI 兼容 `POST …/chat/completions`，**多批 HTTP 并行**（`NEWS_TAG_LLM_CONCURRENCY`），JSON 抽 ``tickers`` / ``industry_tags`` / ``concept_tags``（见 `news_llm_tags.py`）。  
+4. **建嵌入串**：标题 + 正文 + 标签行。  
+5. **向量**：DashScope **`text-embedding-v4`**，**多批并行**（`NEWS_EMBED_CONCURRENCY`，见 `news_embed.py`）。  
+6. **Qdrant**：建集合与索引、**可多并发 upsert 批次**（`INGEST_UPSERT_CONCURRENCY`）、可选按 `pub_ts` 删早于 30 天的点。
+
+
+TradingAgents 侧 **④⑤** 对「标的 + 至多 5 个竞品」**每主体一次**短 query 向量检索，结果按 point id **合并去重**（取 max score）；**⑧ 宏观**将宏观词表切段多路检索后同样合并。依赖 `DASHSCOPE_API_KEY`（嵌入）与 Qdrant 服务。
 
 默认集合名 **`financial_news`**（与 `test.py` 的 `news_collection` 分离，避免误删测试数据）。可通过 `QDRANT_COLLECTION` 覆盖。
 
@@ -71,7 +78,7 @@ flowchart LR
 pip install -r qdrant/requirements-ingest.txt
 ```
 
-项目根目录已含 `pandas` / `tushare` 时，本文件补 **qdrant-client**、**httpx**、**dashscope**（DashScope 嵌入 SDK）。
+项目根目录已含 `pandas` / `tushare` 时，本文件补 **qdrant-client**、**httpx**、**dashscope**（DashScope 嵌入 SDK）、**beautifulsoup4**（入库前本地去掉 HTML 标签）。
 
 ### 环境变量一览
 
@@ -82,6 +89,7 @@ pip install -r qdrant/requirements-ingest.txt
 | `QDRANT_API_KEY` | 与 compose 中 API Key 一致（若启用） |
 | `QDRANT_COLLECTION` | 默认 `financial_news` |
 | `INGEST_UPSERT_BATCH_SIZE` | 默认 `500` |
+| `INGEST_UPSERT_CONCURRENCY` | Qdrant **多批 upsert 并行**，默认 **`1`**（串行）；`2`–`16` 可同时上传多个 batch（负载高时慎用） |
 | `INGEST_LOG_HTTP` | 设为 `1` / `true` 时恢复 **httpx/httpcore** 的 INFO 日志（默认压低，避免淹没流水线步骤） |
 
 **打标（DeepSeek / OpenAI 兼容 Chat）**
@@ -89,8 +97,9 @@ pip install -r qdrant/requirements-ingest.txt
 | 变量 | 说明 |
 |------|------|
 | `NEWS_TAG_LLM_BASE_URL` | 默认 `https://api.deepseek.com/v1` |
+| `NEWS_HTML_STRIP_CONCURRENCY` | 本地 **剥 HTML 标签** 并行线程数，默认 **`8`**，上限 **`64`** |
 | `NEWS_TAG_LLM_API_KEY` | 优先；否则读 `DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY` |
-| `NEWS_TAG_LLM_MODEL` | 默认 `deepseek-chat` |
+| `NEWS_TAG_LLM_MODEL` | 默认 `deepseek-v4-flash` |
 
 **向量（DashScope `text-embedding-v4`，线上）**
 
@@ -110,11 +119,12 @@ pip install -r qdrant/requirements-ingest.txt
 | `NEWS_FETCH_CONCURRENCY` | Tushare 各 `src` 并行拉取，默认 **`4`**（上限 8）；设为 **`1`** 则串行 |
 | `NEWS_TAG_LLM_CONCURRENCY` | LLM 打标 HTTP 批次并行数，默认 **`4`**（上限 32）；设为 **`1`** 则串行 |
 | `NEWS_EMBED_CONCURRENCY` | DashScope 向量嵌入批次数并行，默认 **`4`**（上限 16）；设为 **`1`** 则串行 |
+| `ingest … --html-strip-concurrency N` | 覆盖本地剥标签并行度 |
 | `ingest … --tag-concurrency N` | 覆盖打标并发（不传则用环境变量默认） |
 
 ### 控制台日志
 
-`ingest_news.py` 会打印带 **`[1/5]` … `[5/5]`** 的步骤与耗时；子模块会补充 Tushare 窗口、LLM 批次、向量后端、Qdrant upsert 等说明。
+`ingest_news.py` 会打印带 **`[1/6]` … `[6/6]`** 的步骤与耗时；`news_llm_tags` / `news_embed` / `qdrant_io` 会打出 HTML 并行、LLM 批次、嵌入并行、upsert 并行等说明。
 
 ### 运行示例
 
