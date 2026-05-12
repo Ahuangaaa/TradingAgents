@@ -9,16 +9,13 @@ def get_news(
     end_date: Annotated[str, "End date in yyyy-mm-dd format"],
 ) -> str:
     """
-    Retrieve news and related corpus for a given ticker symbol.
-    Uses the configured news_data vendor. One response may concatenate multiple Tushare APIs
-    (e.g. interactive Q&A, policy, long-form news, flash news, announcements, research reports).
-    When ``news_long_short_use_qdrant`` is true (or env ``NEWS_LONG_SHORT_USE_QDRANT=1``), sections ④⑤
-    (``major_news`` / flash ``news``) are sourced from a **Qdrant** vector collection instead of live
-    Tushare pulls; **section ⑧** adds a **separate** macro-only vector query (and optional LLM summary),
-    not mixed with ④⑤. Install ``.[qdrant-news]`` and run the ingest pipeline under ``qdrant/`` first.
+    Retrieve **company-focused** corpus for a given ticker.
+    Uses the configured news_data vendor. One response aggregates:
+    ①② interactive Q&A + ④⑤ company/peer news (Qdrant merged retrieval) + ⑥ announcements + ⑦ research reports
+    (stock + industry). This tool does **not** include global ③ policy-only block or ⑧ macro vector topic.
+    Qdrant-only mode is required for ④⑤ (no fallback path).
 
     Official Tushare API docs (use ``fetch_url`` on tushare.pro to align field meanings per section):
-    npr — https://tushare.pro/wctapi/documents/406.md
     major_news — https://tushare.pro/wctapi/documents/195.md
     news — https://tushare.pro/wctapi/documents/143.md
     irm_qa_sh — https://tushare.pro/wctapi/documents/366.md
@@ -42,17 +39,13 @@ def get_global_news(
     limit: Annotated[int, "Maximum number of articles to return"] = 5,
 ) -> str:
     """
-    Retrieve global macro-oriented news corpus (no ticker-scoped interactive Q&A or ``anns_d`` in this path).
-    Uses the configured news_data vendor. Output may combine ``npr``, ``major_news``, ``news``, and ``research_report``.
-    When ``news_long_short_use_qdrant`` is enabled, the long-form / flash blocks are filled from **Qdrant**;
-    **section ⑧** uses a **dedicated macro retrieval query** (and optional LLM), separate from ④⑤ (see ``get_news`` tool notes).
+    Retrieve **global macro** corpus only: ③ national policy repository (``npr``) + ⑧ macro vector topic.
+    This path does not include ticker-scoped ①②, ④⑤, ⑥, or ⑦ blocks.
+    Qdrant-only mode is required for section ⑧.
 
     Official Tushare API docs (use ``fetch_url`` on tushare.pro to align field meanings):
     npr — https://tushare.pro/wctapi/documents/406.md
-    major_news — https://tushare.pro/wctapi/documents/195.md
-    news — https://tushare.pro/wctapi/documents/143.md
-    research_report — https://tushare.pro/wctapi/documents/415.md
-    For per-stock announcements and full seven-section corpus, use ``get_news`` (see its docs for ``anns_d`` / ``irm_qa_*``).
+    For company/peer corpus (①②④⑤⑥⑦), use ``get_news``.
 
     Args:
         curr_date (str): Current date in yyyy-mm-dd format
