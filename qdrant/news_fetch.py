@@ -15,8 +15,8 @@ import tushare as ts
 logger = logging.getLogger(__name__)
 
 # ``major_news`` / ``news`` 的 ``src`` 须与 Tushare 文档一致；单元素元组必须带尾逗号，否则写成 ``("x")`` 只是字符串、循环会按字符拆开。
-MAJOR_SRCS = ("同花顺",)
-FLASH_SRCS = ("同花顺",)
+MAJOR_SRCS = ("财联社", "第一财经")
+FLASH_SRCS = ("sina", "cls")
 
 def _require_token() -> str:
     tok = (
@@ -145,9 +145,16 @@ def fetch_tushare_news(days: int = 31) -> pd.DataFrame:
     now_ts = int(datetime.now().timestamp())
     out["pub_ts"] = out["pub_ts"].fillna(now_ts).astype(int)
 
-    out["title"] = out.get("title", "").astype(str).str.strip()
-    out["content"] = out.get("content", "").astype(str)
-    out["url"] = out.get("url", "").astype(str) if "url" in out.columns else ""
+    # Missing title/content from API are NaN; ``astype(str)`` alone becomes the literal ``"nan"`` string.
+    if "title" in out.columns:
+        out["title"] = out["title"].fillna("").astype(str).str.strip()
+    else:
+        out["title"] = ""
+    if "content" in out.columns:
+        out["content"] = out["content"].fillna("").astype(str)
+    else:
+        out["content"] = ""
+    out["url"] = out["url"].fillna("").astype(str) if "url" in out.columns else ""
 
     out = out.drop_duplicates(subset=["title", "pub_time", "src"], keep="first")
     out["stable_id"] = [

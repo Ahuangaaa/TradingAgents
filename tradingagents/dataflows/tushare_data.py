@@ -902,7 +902,8 @@ def _macro_section8_block(cfg: dict, *, win_start: str, win_end: str) -> str:
     head = (
         "### ⑧ 宏观分析（向量库专题）\n\n"
         "> **与 ④⑤ 区分**：④⑤按 **标的/行业/同业** 构造向量 query；本节使用 **宏观专用关键词** "
-        "（``macro_keywords.macro_vector_search_query_text``）做**全市场**检索，概括政策、流动性、海外与大类资产环境。\n"
+        "（``macro_keywords.macro_vector_search_query_text``）做**全市场**检索。**时间窗与 ④⑤ 相同**（配置 "
+        "``news_long_short_lookback_days``，与 ``start_date``/``end_date`` 求交）。\n"
     )
     if not raw_md:
         return head + "（本期无命中或未入库该时间窗。）"
@@ -945,8 +946,8 @@ def get_tushare_news(
       关闭方式：配置 ``news_llm_filter_long_short=False`` 或环境变量 ``TRADINGAGENTS_NEWS_LLM_FILTER=0``，
       此时退回 **仅代码/简称** 子串匹配（仍不使用行业名匹配）。
     - **⑥ 公告**：``anns_d`` 按 ``ts_code`` 与日期窗拉取；**⑦ 研报**：``research_report`` 个股研报 + 可选行业研报（``ind_name`` 与库内一致时才有行业命中）。
-    - **⑧ 宏观分析**：在开启 Qdrant 时，使用 **与 ④⑤ 不同的专用检索词** 做全市场向量检索（时间窗为 **用户请求的起止日期**），可选 quick LLM 摘要；不混入 ④⑤ 语料。
-    - 无法解析为 A 股代码时（如美股、港股代码），返回 ``npr`` + 新闻降级结果（无 e互动 / 公告 / 个股研报）；⑧ 仍可按同一日历窗尝试（若已开 Qdrant）。
+    - **⑧ 宏观分析**：在开启 Qdrant 时，使用 **与 ④⑤ 不同的专用检索词** 做全市场向量检索；**时间窗与 ④⑤ 一致**（``news_long_short_lookback_days`` 与用户 ``start_date``/``end_date`` 相交，默认最多回看 30 天至 ``end_date``），可选 quick LLM 摘要；不混入 ④⑤ 语料。
+    - 无法解析为 A 股代码时（如美股、港股代码），返回 ``npr`` + 新闻降级结果（无 e互动 / 公告 / 个股研报）；⑧ 仍按与 ④⑤ 相同规则的时间窗尝试（若已开 Qdrant）。
     """
     win_start = f"{start_date} 00:00:00"
     win_end = f"{end_date} 23:59:59"
@@ -1099,14 +1100,14 @@ def get_tushare_news(
 
     sec6 = _anns_d_lines(ts_code, d0, d1)
     sec7 = _research_report_lines(ts_code, industry, d0, d1)
-    sec8 = _macro_section8_block(cfg, win_start=win_start, win_end=win_end)
+    sec8 = _macro_section8_block(cfg, win_start=win_45_start, win_end=win_45_end)
 
     news_hdr = (
         f"窗口: {start_date} ~ {end_date} | ④⑤ 子窗: {win_45_start[:10]} ~ {win_45_end[:10]}（最长 {lb} 天）| "
         f"④⑤ 数据源：{'**Qdrant** 向量库' if used_qdrant_45 else 'Tushare API'} | "
         f"匹配/筛选：{'代码/简称子串（LLM 筛选已关闭）' if news_llm_filter_disabled() else 'LLM 语义筛选（已取消行业名子串匹配）'}"
         f" | ⑥⑦：**该股 ts_code** 的公告与研报（⑦ 另含与 ``stock_basic`` 行业名一致的 **行业研报** 抽样）"
-        f" | ⑧：{'Qdrant 宏观专题（与④⑤ query 分离）' if sec8 else '（未生成：关闭 Qdrant 或 ``news_macro_section8_enabled`` 或未命中）'}"
+        f" | ⑧：{'Qdrant 宏观专题（与④⑤ **时间窗一致**、query 分离）' if sec8 else '（未生成：关闭 Qdrant 或 ``news_macro_section8_enabled`` 或未命中）'}"
     )
     blocks = [
         f"## Tushare 大模型语料（八项）— {ticker} / {ts_code}\n\n{news_hdr}",
@@ -1164,6 +1165,8 @@ def _get_tushare_news_without_ts_code(
     )
     sec3 = _npr_policy_lines(win_start, win_end, [], max_rows=25)
     cfg = get_config()
+    lb = int(cfg.get("news_long_short_lookback_days", 30))
+    win_45_start, win_45_end = _long_short_window_strs(start_date, end_date, lb)
     from .news_qdrant_retrieval import news_long_short_use_qdrant, retrieve_markdown_loose
 
     used_q45 = False
@@ -1220,7 +1223,7 @@ def _get_tushare_news_without_ts_code(
         "### ⑦ 券商研究报告（research_report）\n\n"
         "（跳过：需要 ``ts_code``；全局宏观抽样见 ``get_tushare_global_news``。）",
     ]
-    sec8 = _macro_section8_block(cfg, win_start=win_start, win_end=win_end)
+    sec8 = _macro_section8_block(cfg, win_start=win_45_start, win_end=win_45_end)
     if sec8:
         blocks.append(sec8)
     return "\n\n".join(blocks).strip()
@@ -1257,6 +1260,8 @@ def get_tushare_global_news(
     sec_npr = _npr_policy_lines(win_start, win_end, [], max_rows=max(30, min(80, limit)))
 
     cfg = get_config()
+    lb = int(cfg.get("news_long_short_lookback_days", 30))
+    win_45_start, win_45_end = _long_short_window_strs(start_date, end_date, lb)
     from .news_qdrant_retrieval import news_long_short_use_qdrant, retrieve_global_markdown
 
     used_q45 = False
@@ -1289,10 +1294,11 @@ def get_tushare_global_news(
     ph = "（本期无返回数据或未命中宏观/市场类关键词。）"
     ph_rr = "（本期无返回、或未命中宏观/市场类关键词、或 ``research_report`` 权限不足。）"
 
-    sec8 = _macro_section8_block(cfg, win_start=win_start, win_end=win_end)
+    sec8 = _macro_section8_block(cfg, win_start=win_45_start, win_end=win_45_end)
 
     blocks = [
-        f"## Tushare 全局语料（npr + major_news + news + ⑧ + research_report）\n\n{win_start} — {win_end}\n\n"
+        f"## Tushare 全局语料（npr + major_news + news + ⑧ + research_report）\n\n{win_start} — {win_end}"
+        f" | ⑧/Qdrant④⑤ 向量子窗: {win_45_start[:10]} ~ {win_45_end[:10]}（最长 {lb} 天）\n\n"
         "> **说明**：本接口为**宏观与市场要闻**；`npr` 为政策法规库，**不是按股票代码的个股新闻**。"
         "④⑤ 为市场类要闻（与 ``get_tushare_news`` 中按标的检索的 ④⑤ query 不同）；**⑧** 为 **宏观专用 query** 的向量专题。"
         "``anns_d`` 全量公告需标的代码，请用 ``get_tushare_news``。\n",

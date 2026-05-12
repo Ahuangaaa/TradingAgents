@@ -188,7 +188,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     t_pipeline = time.perf_counter()
 
     logger.info(
-        "======== ingest start: days=%s collection=%r dry_run=%s skip_delete=%s html_strip_workers=%s tag_batch=%s tag_concurrency=%s embed_workers(env) upsert_workers(env)=%s upsert_batch=%s ========",
+        "======== ingest start: days=%s collection=%r dry_run=%s skip_delete=%s html_strip_workers=%s tag_batch=%s tag_concurrency=%s embed_workers(env)=%s upsert_workers(env)=%s upsert_batch=%s ========",
         args.days,
         collection,
         args.dry_run,
