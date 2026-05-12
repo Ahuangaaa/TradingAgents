@@ -271,3 +271,13 @@ Please reference our work if you find *TradingAgents* provides you with some hel
       url={https://arxiv.org/abs/2412.20138}, 
 }
 ```
+
+### 基本操作
+1. 启动docker
+cd qdrant
+docker compose up -d
+2. 进入到根目录，然后入库新闻, 绘入库最近5天的新闻，然后删除30天以前的新闻
+cd ..
+python qdrant/ingest_news.py ingest --days 5
+3. 分析
+tradingagents
