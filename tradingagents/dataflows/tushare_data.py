@@ -757,9 +757,9 @@ def get_tushare_industry_peers(
     ] = None,
     max_peers: Annotated[int, "Maximum number of peer rows (excluding focal) to return"] = 8,
 ) -> str:
-    """List **business competitors** as A-shares via **DeepSeek** + ``stock_basic`` validation.
+    """List **business competitors** as A-shares: **DeepSeek** (dedicated prompt via Chat Completions) + ``stock_basic`` validation.
 
-    Not the old Tushare same-``industry`` universe; peers are model-selected then verified.
+    Tushare is **not** used to rank or sample a same-industry universe; it only verifies codes and fills display fields.
     """
     from .peers_deepseek import fetch_validated_peers
 
@@ -767,7 +767,7 @@ def get_tushare_industry_peers(
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if not ts_code:
         return (
-            "# Listed competitors (DeepSeek + Tushare validation)\n\n"
+            "# Listed competitors (DeepSeek inference + Tushare code check)\n\n"
             f"_Retrieved: {stamp}_\n\n"
             f"Cannot resolve `{ticker}` as an A-share ts_code (use 6-digit .SH/.SZ/.BJ).\n"
             "For non-A-share competitors, name tickers from filings or official IR.\n"
@@ -800,16 +800,20 @@ def get_tushare_industry_peers(
         use_cache=True,
     )
     note = (
-        f"Focal: **{focal_name}** (`{ts_code}`) · Tushare industry field: **{industry or '（空）'}**. "
-        f"Up to **{cap}** **model-selected** A-share competitors (codes verified via `stock_basic`). "
-        "Use **3–5** for `get_news` / `get_fundamentals` if fewer are returned.\n\n"
+        f"**标的**：{focal_name}（`{ts_code}`）。披露行业分类：**{industry or '（空）'}**（监管字段，**不是**竞品选股依据）。\n\n"
+        "## 竞品名单如何产生（请在下游报告中如实表述）\n"
+        "1. 后端使用 **DeepSeek OpenAI 兼容 Chat Completions**（专用系统/用户提示词，模型见 `PEER_LLM_MODEL` / 默认 `deepseek-v4-flash`）"
+        " 由模型**独立推理**主营业务竞争关系，输出候选 `ts_code` 列表。\n"
+        "2. **Tushare `stock_basic`** 仅做：代码是否存在、是否处于上市状态、补全证券简称与披露行业列；"
+        "**不作为**「从 Tushare 同行业（或行业分类）列表里挑几只」的依据。\n\n"
+        f"下列最多 **{cap}** 家为校码后的竞品，用于 `get_news` / `get_fundamentals` 等后续分析。\n\n"
     )
     if not peers:
         return (
-            "# Listed competitors (DeepSeek + Tushare validation)\n\n"
+            "# Listed competitors (DeepSeek inference + Tushare code check)\n\n"
             f"_Retrieved: {stamp}_\n\n"
             + note
-            + "No validated peer rows (check API keys: DEEPSEEK / NEWS_TAG_LLM_* or PEER_LLM_*).\n"
+            + "No validated peer rows (check API keys: `PEER_LLM_API_KEY` / `NEWS_TAG_LLM_API_KEY` / `DEEPSEEK_API_KEY`).\n"
         )
 
     lines = [
@@ -819,7 +823,7 @@ def get_tushare_industry_peers(
     for p in peers:
         lines.append(f"| {p.ts_code} | {p.name} | {p.industry} |")
     return (
-        "# Listed competitors (DeepSeek + Tushare validation)\n\n"
+        "# Listed competitors (DeepSeek inference + Tushare code check)\n\n"
         f"_Retrieved: {stamp}_\n\n"
         + note
         + "\n"

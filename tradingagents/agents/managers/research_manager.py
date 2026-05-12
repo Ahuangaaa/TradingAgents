@@ -11,19 +11,21 @@ from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
+from tradingagents.dataflows.run_trace_context import analyst_llm_phase
 
 
 def create_research_manager(llm):
     structured_llm = bind_structured(llm, ResearchPlan, "Research Manager")
 
     def research_manager_node(state) -> dict:
-        instrument_context = build_instrument_context(state["company_of_interest"])
-        history = state["investment_debate_state"].get("history", "")
+        with analyst_llm_phase("research_manager"):
+            instrument_context = build_instrument_context(state["company_of_interest"])
+            history = state["investment_debate_state"].get("history", "")
 
-        investment_debate_state = state["investment_debate_state"]
-        deep_checklist = state.get("deep_fundamental_checklist_report", "")
+            investment_debate_state = state["investment_debate_state"]
+            deep_checklist = state.get("deep_fundamental_checklist_report", "")
 
-        prompt = f"""As the Research Manager and debate facilitator, your role is to critically evaluate this round of debate and deliver a clear, actionable investment plan for the trader.
+            prompt = f"""As the Research Manager and debate facilitator, your role is to critically evaluate this round of debate and deliver a clear, actionable investment plan for the trader.
 
 {instrument_context}
 
@@ -48,26 +50,26 @@ Commit to a clear stance whenever the debate's strongest arguments warrant one; 
 **Debate History:**
 {history}{get_language_instruction()}"""
 
-        investment_plan = invoke_structured_or_freetext(
-            structured_llm,
-            llm,
-            prompt,
-            render_research_plan,
-            "Research Manager",
-        )
+            investment_plan = invoke_structured_or_freetext(
+                structured_llm,
+                llm,
+                prompt,
+                render_research_plan,
+                "Research Manager",
+            )
 
-        new_investment_debate_state = {
-            "judge_decision": investment_plan,
-            "history": investment_debate_state.get("history", ""),
-            "bear_history": investment_debate_state.get("bear_history", ""),
-            "bull_history": investment_debate_state.get("bull_history", ""),
-            "current_response": investment_plan,
-            "count": investment_debate_state["count"],
-        }
+            new_investment_debate_state = {
+                "judge_decision": investment_plan,
+                "history": investment_debate_state.get("history", ""),
+                "bear_history": investment_debate_state.get("bear_history", ""),
+                "bull_history": investment_debate_state.get("bull_history", ""),
+                "current_response": investment_plan,
+                "count": investment_debate_state["count"],
+            }
 
-        return {
-            "investment_debate_state": new_investment_debate_state,
-            "investment_plan": investment_plan,
-        }
+            return {
+                "investment_debate_state": new_investment_debate_state,
+                "investment_plan": investment_plan,
+            }
 
     return research_manager_node

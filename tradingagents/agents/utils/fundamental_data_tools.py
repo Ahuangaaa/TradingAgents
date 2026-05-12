@@ -35,10 +35,10 @@ def get_industry_peers(
     max_peers: Annotated[int, "max peer rows to return (default 8)"] = 8,
 ) -> str:
     """
-    List **model-selected** listed A-share competitors (DeepSeek + ``stock_basic`` validation).
+    List **business competitors** as A-shares: backend calls **DeepSeek** (dedicated Chat Completions prompt),
+    then Tushare ``stock_basic`` validates ``ts_code`` and fills names — **not** a raw same-industry sort from Tushare.
 
     Call **before** deep `get_news` or `get_fundamentals` on competitors so tickers are explicit.
-    Not a raw Tushare same-industry universe; peers are business comps chosen by the model then verified.
 
     Official docs: stock_basic — https://tushare.pro/wctapi/documents/25.md
     """

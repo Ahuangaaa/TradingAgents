@@ -1,20 +1,22 @@
 from tradingagents.agents.utils.agent_utils import get_language_instruction
+from tradingagents.dataflows.run_trace_context import analyst_llm_phase
 
 
 def create_bear_researcher(llm):
     def bear_node(state) -> dict:
-        investment_debate_state = state["investment_debate_state"]
-        history = investment_debate_state.get("history", "")
-        bear_history = investment_debate_state.get("bear_history", "")
+        with analyst_llm_phase("bear_researcher"):
+            investment_debate_state = state["investment_debate_state"]
+            history = investment_debate_state.get("history", "")
+            bear_history = investment_debate_state.get("bear_history", "")
 
-        current_response = investment_debate_state.get("current_response", "")
-        market_research_report = state["market_report"]
-        sentiment_report = state["sentiment_report"]
-        news_report = state["news_report"]
-        fundamentals_report = state["fundamentals_report"]
-        deep_checklist = state.get("deep_fundamental_checklist_report", "")
+            current_response = investment_debate_state.get("current_response", "")
+            market_research_report = state["market_report"]
+            sentiment_report = state["sentiment_report"]
+            news_report = state["news_report"]
+            fundamentals_report = state["fundamentals_report"]
+            deep_checklist = state.get("deep_fundamental_checklist_report", "")
 
-        prompt = f"""You are a Bear Analyst making the case against investing in the stock. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.
+            prompt = f"""You are a Bear Analyst making the case against investing in the stock. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.
 
 Key points to focus on:
 
@@ -36,18 +38,18 @@ Last bull argument: {current_response}
 Use this information to deliver a compelling bear argument, refute the bull's claims, and engage in a dynamic debate that demonstrates the risks and weaknesses of investing in the stock.{get_language_instruction()}
 """
 
-        response = llm.invoke(prompt)
+            response = llm.invoke(prompt)
 
-        argument = f"Bear Analyst: {response.content}"
+            argument = f"Bear Analyst: {response.content}"
 
-        new_investment_debate_state = {
-            "history": history + "\n" + argument,
-            "bear_history": bear_history + "\n" + argument,
-            "bull_history": investment_debate_state.get("bull_history", ""),
-            "current_response": argument,
-            "count": investment_debate_state["count"] + 1,
-        }
+            new_investment_debate_state = {
+                "history": history + "\n" + argument,
+                "bear_history": bear_history + "\n" + argument,
+                "bull_history": investment_debate_state.get("bull_history", ""),
+                "current_response": argument,
+                "count": investment_debate_state["count"] + 1,
+            }
 
-        return {"investment_debate_state": new_investment_debate_state}
+            return {"investment_debate_state": new_investment_debate_state}
 
     return bear_node

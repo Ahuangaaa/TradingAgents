@@ -1,7 +1,7 @@
-"""面向业务的 A 股竞争对手列表：DeepSeek 结构化输出 + Tushare ``ts_code`` 校验。
+"""面向业务的 A 股竞争对手：专用提示词调用 DeepSeek Chat Completions，再用 Tushare ``stock_basic`` 校码。
 
-与 ingest 标签使用相同的 OpenAI 兼容 Chat Completions 环境变量（``NEWS_TAG_LLM_*``），
-亦可专用 ``PEER_LLM_*`` 覆盖。
+端点/模型由 ``PEER_LLM_*`` 或 ``NEWS_TAG_LLM_*`` / ``DEEPSEEK_API_KEY`` 等环境变量配置。
+Tushare 仅校验代码与补全简称/披露行业字段，**不**从「同行业股票池」机械选股。
 """
 
 from __future__ import annotations
@@ -117,7 +117,7 @@ def _cache_file(key: str) -> Path | None:
 
 def _cache_key(focal_ts: str, curr_date: str | None) -> str:
     h = hashlib.sha256()
-    h.update(f"{focal_ts}|{curr_date or ''}".encode("utf-8"))
+    h.update(f"{focal_ts}|{curr_date or ''}|peer_prompt_v2".encode("utf-8"))
     return h.hexdigest()[:48]
 
 
@@ -130,7 +130,7 @@ def fetch_validated_peers(
     curr_date: str | None = None,
     use_cache: bool = True,
 ) -> list[ValidatedPeer]:
-    """调用 DeepSeek 列出与标的最相关的已上市 A 股竞争对手，返回最多 ``max_peers`` 条（已校验 ``ts_code``）。"""
+    """调用 DeepSeek（专用 system/user 提示词，Chat Completions）列出与标的最相关的已上市 A 股竞争对手，再经 ``stock_basic`` 校码，返回最多 ``max_peers`` 条。"""
     focal_ts = str(focal_ts_code).strip().upper()
     cap = max(1, min(int(max_peers) if max_peers else 5, 12))
 
@@ -162,18 +162,33 @@ def fetch_validated_peers(
         return []
 
     user = (
-        f"标的：{focal_ts} {focal_name or ''}，Tushare 行业：{focal_industry or '未知'}。\n"
-        f"请列出在中国大陆 A 股市场上市、与该公司主营业务**直接竞争**的最重要对手，最多 {cap} 家。\n"
-        "只输出一个 JSON 数组，元素字段："
-        '`"ts_code"`（形如 600519.SH）、`"name"`（中文简称）、`"industry"`（Tushare 式行业名或接近表述）。\n'
-        "不要包含标的自身；不要港股美股；不确定的代码不要编造。"
+        f"【标的】{focal_ts}  {focal_name or ''}\n"
+        f"【监管披露行业分类（仅供参考，不是选股池）】{focal_industry or '未知'}\n\n"
+        f"请基于**产品/客户/渠道/商业模式重叠**，列出在中国大陆 A 股上市、与上述标的**直接竞争**的最重要公司，"
+        f"至多 {cap} 家。名单必须由你在本对话中推理得出，"
+        "**不要**写或暗示「从 Tushare 同行业列表选取」「按行业分类筛选」等表述。\n\n"
+        "只输出一个 JSON 数组。每个元素为对象，字段：\n"
+        '- `"ts_code"`：形如 600519.SH / 000001.SZ / 8xxxxx.BJ 的 A 股代码；\n'
+        '- `"name"`：该公司中文简称；\n'
+        '- `"industry"`：你对其主营的简短概括（可与披露行业不同）。\n\n'
+        "排除标的自身；不要港股/美股；无法确认的代码不要输出。"
+    )
+
+    system = (
+        "你是资深 A 股行业与公司研究助手。你的唯一任务：根据用户给出的标的信息，"
+        "独立推理**主营业务直接竞争**关系，列出最重要的已上市 A 股竞争对手。\n"
+        "硬性规则：\n"
+        "1) 禁止按「与标的相同的 Tushare 行业名」或任何「同行业股票池 / 行业成分股」做机械筛选或排序；"
+        "行业分类若出现在用户消息中，仅为监管披露标签，**不得**当作选股池。\n"
+        "2) 禁止编造 ts_code；不确定则不要输出该条。\n"
+        "3) 只输出一个 JSON 数组，无其它说明文字、无 markdown 围栏。"
     )
 
     payload = {
         "model": _model(),
         "temperature": 0.2,
         "messages": [
-            {"role": "system", "content": "你是 A 股产业与公司研究助手，只输出 JSON 数组。"},
+            {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
     }

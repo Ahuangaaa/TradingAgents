@@ -1,5 +1,6 @@
 from typing import Optional
 import datetime
+import json
 import typer
 from pathlib import Path
 from functools import wraps
@@ -26,10 +27,17 @@ from rich.rule import Rule
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.dataflows.run_trace_context import set_report_dir
+from tradingagents.dataflows.trace_rollup import (
+    rollup_events_jsonl,
+    write_analyst_breakdown_md,
+    write_analyst_summary_json,
+)
 from cli.models import AnalystType
 from cli.utils import *
 from cli.announcements import fetch_announcements, display_announcements
 from cli.stats_handler import StatsCallbackHandler
+from cli.run_trace_handler import RunTraceCallbackHandler
 
 console = Console()
 
@@ -969,7 +977,58 @@ def format_tool_args(args, max_length=80) -> str:
         return result[:max_length - 3] + "..."
     return result
 
-def run_analysis(checkpoint: bool = False):
+def _write_run_summary(
+    report_dir: Path,
+    trace_dir: Path,
+    selections: dict,
+    stats: dict,
+    analysis_seconds: float,
+    analyst_summary: dict,
+) -> None:
+    lines = [
+        "# Run summary",
+        "",
+        f"- Ticker: {selections['ticker']}",
+        f"- Analysis date: {selections['analysis_date']}",
+        f"- Wall time (analysis): {analysis_seconds:.1f}s",
+        "",
+        "## LLM / tool stats",
+        "",
+        "```json",
+        json.dumps(stats, indent=2),
+        "```",
+        "",
+        "## Per-analyst totals (ms)",
+        "",
+        "| analyst_key | total_ms | llm_ms | tools_ms | llm_calls | tool_calls |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for key in sorted(analyst_summary.keys()):
+        block = analyst_summary[key]
+        lines.append(
+            f"| {key} | {block.get('analyst_total_ms', 0)} | {block.get('llm_total_ms', 0)} | "
+            f"{block.get('tools_total_ms', 0)} | {block.get('llm_calls', 0)} | {block.get('tool_calls', 0)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Trace files",
+            "",
+            f"- Flat events: `{trace_dir / 'events.jsonl'}`",
+            f"- Analyst summary (JSON): `{trace_dir / 'analyst_summary.json'}`",
+            f"- Analyst breakdown (Markdown): `{trace_dir / 'analyst_breakdown.md'}`",
+            f"- Qdrant diagnostics (if any): `{trace_dir / 'qdrant_retrieval.jsonl'}`",
+            "",
+        ]
+    )
+    (report_dir / "run_summary.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def run_analysis(
+    checkpoint: bool = False,
+    interactive_save: bool = False,
+    print_report: bool = False,
+):
     # First get all user selections
     selections = get_user_selections()
 
@@ -995,14 +1054,6 @@ def run_analysis(checkpoint: bool = False):
     selected_set = {analyst.value for analyst in selections["analysts"]}
     selected_analyst_keys = [a for a in ANALYST_ORDER if a in selected_set]
 
-    # Initialize the graph with callbacks bound to LLMs
-    graph = TradingAgentsGraph(
-        selected_analyst_keys,
-        config=config,
-        debug=True,
-        callbacks=[stats_handler],
-    )
-
     # Initialize message buffer with selected analysts
     message_buffer.init_for_analysis(selected_analyst_keys)
 
@@ -1014,6 +1065,19 @@ def run_analysis(checkpoint: bool = False):
     results_dir.mkdir(parents=True, exist_ok=True)
     report_dir = results_dir / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
+    trace_dir = report_dir / "trace"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    events_path = trace_dir / "events.jsonl"
+    trace_handler = RunTraceCallbackHandler(events_path)
+    set_report_dir(report_dir)
+
+    # Initialize the graph with callbacks bound to LLMs and run trace
+    graph = TradingAgentsGraph(
+        selected_analyst_keys,
+        config=config,
+        debug=True,
+        callbacks=[stats_handler, trace_handler],
+    )
     log_file = results_dir / "message_tool.log"
     log_file.touch(exist_ok=True)
 
@@ -1092,10 +1156,11 @@ def run_analysis(checkpoint: bool = False):
         )
         # Pass callbacks to graph config for tool execution tracking
         # (LLM tracking is handled separately via LLM constructor)
-        args = graph.propagator.get_graph_args(callbacks=[stats_handler])
+        args = graph.propagator.get_graph_args(callbacks=[stats_handler, trace_handler])
 
         # Stream the analysis
         trace = []
+        analysis_wall0 = time.time()
         for chunk in graph.graph.stream(init_agent_state, **args):
             # Process all messages in chunk, deduplicating by message ID
             for message in chunk.get("messages", []):
@@ -1195,6 +1260,8 @@ def run_analysis(checkpoint: bool = False):
 
             trace.append(chunk)
 
+        analysis_wall1 = time.time()
+
         # Get final state and decision
         final_state = trace[-1]
         decision = graph.process_signal(final_state["final_trade_decision"])
@@ -1214,30 +1281,55 @@ def run_analysis(checkpoint: bool = False):
 
         update_display(layout, stats_handler=stats_handler, start_time=start_time)
 
-    # Post-analysis prompts (outside Live context for clean interaction)
-    console.print("\n[bold cyan]Analysis Complete![/bold cyan]\n")
+    analyst_summary = rollup_events_jsonl(events_path)
+    write_analyst_summary_json(analyst_summary, trace_dir / "analyst_summary.json")
+    write_analyst_breakdown_md(analyst_summary, trace_dir / "analyst_breakdown.md")
+    _write_run_summary(
+        report_dir,
+        trace_dir,
+        selections,
+        stats_handler.get_stats(),
+        analysis_wall1 - analysis_wall0,
+        analyst_summary,
+    )
 
-    # Prompt to save report
-    save_choice = typer.prompt("Save report?", default="Y").strip().upper()
-    if save_choice in ("Y", "YES", ""):
+    # Post-analysis (outside Live context for clean interaction)
+    console.print("\n[bold cyan]Analysis Complete![/bold cyan]\n")
+    console.print(f"[dim]Trace: {trace_dir.resolve()}[/dim]")
+    console.print(f"[dim]Run summary: {(report_dir / 'run_summary.md').resolve()}[/dim]\n")
+
+    if not interactive_save:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_path = Path.cwd() / "reports" / f"{selections['ticker']}_{timestamp}"
-        save_path_str = typer.prompt(
-            "Save path (press Enter for default)",
-            default=str(default_path)
-        ).strip()
-        save_path = Path(save_path_str)
+        export_path = report_dir / f"export_{timestamp}"
         try:
-            report_file = save_report_to_disk(final_state, selections["ticker"], save_path)
-            console.print(f"\n[green]✓ Report saved to:[/green] {save_path.resolve()}")
+            report_file = save_report_to_disk(final_state, selections["ticker"], export_path)
+            console.print(f"[green]✓ Report saved to:[/green] {export_path.resolve()}")
             console.print(f"  [dim]Complete report:[/dim] {report_file.name}")
         except Exception as e:
             console.print(f"[red]Error saving report: {e}[/red]")
+    else:
+        save_choice = typer.prompt("Save report?", default="Y").strip().upper()
+        if save_choice in ("Y", "YES", ""):
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            default_path = Path.cwd() / "reports" / f"{selections['ticker']}_{timestamp}"
+            save_path_str = typer.prompt(
+                "Save path (press Enter for default)",
+                default=str(default_path),
+            ).strip()
+            save_path = Path(save_path_str)
+            try:
+                report_file = save_report_to_disk(final_state, selections["ticker"], save_path)
+                console.print(f"\n[green]✓ Report saved to:[/green] {save_path.resolve()}")
+                console.print(f"  [dim]Complete report:[/dim] {report_file.name}")
+            except Exception as e:
+                console.print(f"[red]Error saving report: {e}[/red]")
 
-    # Prompt to display full report
-    display_choice = typer.prompt("\nDisplay full report on screen?", default="Y").strip().upper()
-    if display_choice in ("Y", "YES", ""):
+    if print_report:
         display_complete_report(final_state)
+    elif interactive_save:
+        display_choice = typer.prompt("\nDisplay full report on screen?", default="Y").strip().upper()
+        if display_choice in ("Y", "YES", ""):
+            display_complete_report(final_state)
 
 
 @app.command()
@@ -1252,12 +1344,26 @@ def analyze(
         "--clear-checkpoints",
         help="Delete all saved checkpoints before running (force fresh start).",
     ),
+    interactive_save: bool = typer.Option(
+        False,
+        "--interactive-save",
+        help="Prompt for save path and optional console report (default: auto-save under results reports/).",
+    ),
+    print_report: bool = typer.Option(
+        False,
+        "--print-report",
+        help="Print the full analysis report to the console after completion (no prompt).",
+    ),
 ):
     if clear_checkpoints:
         from tradingagents.graph.checkpointer import clear_all_checkpoints
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
-    run_analysis(checkpoint=checkpoint)
+    run_analysis(
+        checkpoint=checkpoint,
+        interactive_save=interactive_save,
+        print_report=print_report,
+    )
 
 
 if __name__ == "__main__":

@@ -182,7 +182,10 @@ def screen_long_short_news_with_llm(
         f"标的入参: {focal_ticker} | ts_code: {ts_code} | 简称: {stock_name or '未知'}"
         f" | 行业(背景，勿做字面匹配): {industry or '未知'}"
     )
-    peers_line = f"同行业可比 ts_code: {peer_str}"
+    peers_line = (
+        "DeepSeek 竞品 ts_code（由专用提示词推理后经 stock_basic 校码，非按披露行业成分池选取）: "
+        f"{peer_str}"
+    )
 
     by_id = {str(r["id"]): r for r in raw_items}
     all_kept: list[dict[str, Any]] = []

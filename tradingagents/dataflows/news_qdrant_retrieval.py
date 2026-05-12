@@ -17,6 +17,7 @@ import pandas as pd
 
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.macro_keywords import macro_vector_search_query_texts
+from tradingagents.dataflows.run_trace_context import append_qdrant_trace
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +256,17 @@ def retrieve_merged_equity_raw_items(
         len(raw_flash),
         _collection_name(cfg),
     )
+    append_qdrant_trace(
+        {
+            "kind": "equity_45",
+            "routes": len(entities),
+            "hits_merged": len(merged_hits),
+            "kept_major": len(raw_major),
+            "kept_flash": len(raw_flash),
+            "collection": _collection_name(cfg),
+            "entity_codes": [e[0] for e in entities],
+        }
+    )
     return out
 
 
@@ -420,6 +432,16 @@ def retrieve_macro_section_markdown(
         len(flash_lines),
         _collection_name(cfg),
     )
+    append_qdrant_trace(
+        {
+            "kind": "macro_8",
+            "queries": len(queries),
+            "hits_merged": len(hits),
+            "kept_major": len(major_lines),
+            "kept_flash": len(flash_lines),
+            "collection": _collection_name(cfg),
+        }
+    )
     return major_lines, flash_lines
 
 
@@ -474,4 +496,14 @@ def retrieve_global_markdown(
                 flash_lines.append(line)
         if len(major_lines) >= per_major and len(flash_lines) >= per_flash:
             break
+    append_qdrant_trace(
+        {
+            "kind": "global_45",
+            "queries": len(queries),
+            "hits_merged": len(hits),
+            "kept_major": len(major_lines),
+            "kept_flash": len(flash_lines),
+            "collection": _collection_name(cfg),
+        }
+    )
     return major_lines, flash_lines

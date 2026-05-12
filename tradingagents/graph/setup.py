@@ -1,13 +1,28 @@
 # TradingAgents/graph/setup.py
 
 from typing import Any, Dict
+
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from tradingagents.agents import *
 from tradingagents.agents.utils.agent_states import AgentState
+from tradingagents.dataflows.run_trace_context import tools_phase
 
 from .conditional_logic import ConditionalLogic
+
+
+def _wrap_tools_node(analyst_type: str, tool_node: ToolNode):
+    """Run ToolNode under ``tools_phase`` so trace callbacks attribute tools to an analyst."""
+
+    def run_tools(state: Any, config: RunnableConfig | None = None) -> Any:
+        with tools_phase(analyst_type):
+            if config is None:
+                return tool_node.invoke(state)
+            return tool_node.invoke(state, config)
+
+    return run_tools
 
 
 class GraphSetup:
@@ -98,7 +113,10 @@ class GraphSetup:
             workflow.add_node(
                 f"Msg Clear {analyst_type.capitalize()}", delete_nodes[analyst_type]
             )
-            workflow.add_node(f"tools_{analyst_type}", tool_nodes[analyst_type])
+            workflow.add_node(
+                f"tools_{analyst_type}",
+                _wrap_tools_node(analyst_type, tool_nodes[analyst_type]),
+            )
 
         # Add other nodes
         workflow.add_node("Deep Fundamental Checklist", deep_fundamental_checklist_node)
