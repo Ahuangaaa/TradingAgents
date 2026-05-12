@@ -25,6 +25,26 @@ from .utils import safe_ticker_component
 
 logger = logging.getLogger(__name__)
 
+# 上证 e 互动 / 深证互动易 / 国家政策库 ``npr`` / 研报 ``research_report`` / 公告 ``anns_d``：相对 **分析结束日** 固定回溯 90 个自然日（与 ④⑤/⑧ 的窗口独立）。
+NEWS_IRM_NPR_REPORT_LOOKBACK_CAL_DAYS = 90
+
+
+def _irm_npr_report_window_from_end(end_date: str) -> tuple[str, str, str, str]:
+    """返回 ``npr`` 与时间型接口用的时间串及 Tushare ``YYYYMMDD`` 起止。
+
+    窗口 ``[end_date - 90 自然日 00:00:00, end_date 23:59:59]``（含端点）。
+    用于 ①② ``irm_qa``、③ ``npr``、⑥ ``anns_d``、⑦ ``research_report``。
+    """
+    end_s = str(end_date)[:10]
+    end_dt = pd.Timestamp(end_s)
+    start_dt = end_dt - pd.Timedelta(days=int(NEWS_IRM_NPR_REPORT_LOOKBACK_CAL_DAYS))
+    ext_start = start_dt.strftime("%Y-%m-%d")
+    d0_ext = to_yyyymmdd(ext_start)
+    d1_ext = to_yyyymmdd(end_s)
+    ext_win_start = f"{ext_start} 00:00:00"
+    ext_win_end = f"{end_s} 23:59:59"
+    return ext_win_start, ext_win_end, d0_ext, d1_ext
+
 
 def _df_to_csv_header(title: str, ts_code: str, body: str) -> str:
     header = f"# {title} for {ts_code}\n"
@@ -945,13 +965,15 @@ def get_tushare_news(
       否则从 Tushare 拉取后经 **quick LLM 分批语义筛选**（可缓存）。
       关闭方式：配置 ``news_llm_filter_long_short=False`` 或环境变量 ``TRADINGAGENTS_NEWS_LLM_FILTER=0``，
       此时退回 **仅代码/简称** 子串匹配（仍不使用行业名匹配）。
-    - **⑥ 公告**：``anns_d`` 按 ``ts_code`` 与日期窗拉取；**⑦ 研报**：``research_report`` 个股研报 + 可选行业研报（``ind_name`` 与库内一致时才有行业命中）。
+    - **⑥ 上市公司公告**：``anns_d`` 与 **①②③⑦** 相同，相对 ``end_date`` **固定回溯 90 个自然日**。
+    - **①② 互动问答**、**③ 国家政策库**、**⑦ 券商研报**：相对 ``end_date`` **固定回溯 90 个自然日**（常量 ``NEWS_IRM_NPR_REPORT_LOOKBACK_CAL_DAYS``），与 ``start_date`` 无关；**④⑤** 仍用 ``news_long_short_lookback_days`` 子窗。
     - **⑧ 宏观分析**：在开启 Qdrant 时，使用 **与 ④⑤ 不同的专用检索词** 做全市场向量检索；**时间窗与 ④⑤ 一致**（``news_long_short_lookback_days`` 与用户 ``start_date``/``end_date`` 相交，默认最多回看 30 天至 ``end_date``），可选 quick LLM 摘要；不混入 ④⑤ 语料。
     - 无法解析为 A 股代码时（如美股、港股代码），返回 ``npr`` + 新闻降级结果（无 e互动 / 公告 / 个股研报）；⑧ 仍按与 ④⑤ 相同规则的时间窗尝试（若已开 Qdrant）。
     """
     win_start = f"{start_date} 00:00:00"
     win_end = f"{end_date} 23:59:59"
     d0, d1 = to_yyyymmdd(start_date), to_yyyymmdd(end_date)
+    irm_npr_rr_win_start, irm_npr_rr_win_end, irm_rr_d0, irm_rr_d1 = _irm_npr_report_window_from_end(end_date)
     ph = "（本期无返回数据、或接口权限/参数不支持。）"
     broad_kw = macro_market_keywords()
 
@@ -980,8 +1002,8 @@ def get_tushare_news(
     major_srcs = ("新浪财经", "财联社", "第一财经", "华尔街见闻", "中证网", "同花顺")
     flash_srcs = ("sina", "eastmoney", "10jqka", "cls", "yicai", "fenghuang", "jinrongjie", "wallstreetcn")
 
-    sec1 = _irm_qa_lines(ts_code, d0, d1, "irm_qa_sh", "上证e互动")
-    sec2 = _irm_qa_lines(ts_code, d0, d1, "irm_qa_sz", "深证互动易")
+    sec1 = _irm_qa_lines(ts_code, irm_rr_d0, irm_rr_d1, "irm_qa_sh", "上证e互动")
+    sec2 = _irm_qa_lines(ts_code, irm_rr_d0, irm_rr_d1, "irm_qa_sz", "深证互动易")
 
     # npr：不按证券代码做「个股新闻」式过滤；可选行业词仅用于同窗口内排序靠前
     npr_hint = (
@@ -989,7 +1011,7 @@ def get_tushare_news(
         "下列为时间窗口内最新政策条目，用作**宏观与监管背景**；与该股是否同名无必然关系。\n\n"
     )
     npr_kw: list[str] = [industry] if industry and len(industry) >= 2 else []
-    sec3 = _npr_policy_lines(win_start, win_end, npr_kw, max_rows=28)
+    sec3 = _npr_policy_lines(irm_npr_rr_win_start, irm_npr_rr_win_end, npr_kw, max_rows=28)
 
     cfg = get_config()
     lb = int(cfg.get("news_long_short_lookback_days", 30))
@@ -1098,15 +1120,15 @@ def get_tushare_news(
             sec4 = [sec4] if (sec4 or "").strip() else []
             sec5 = [sec5] if (sec5 or "").strip() else []
 
-    sec6 = _anns_d_lines(ts_code, d0, d1)
-    sec7 = _research_report_lines(ts_code, industry, d0, d1)
+    sec6 = _anns_d_lines(ts_code, irm_rr_d0, irm_rr_d1)
+    sec7 = _research_report_lines(ts_code, industry, irm_rr_d0, irm_rr_d1)
     sec8 = _macro_section8_block(cfg, win_start=win_45_start, win_end=win_45_end)
 
     news_hdr = (
         f"窗口: {start_date} ~ {end_date} | ④⑤ 子窗: {win_45_start[:10]} ~ {win_45_end[:10]}（最长 {lb} 天）| "
         f"④⑤ 数据源：{'**Qdrant** 向量库' if used_qdrant_45 else 'Tushare API'} | "
         f"匹配/筛选：{'代码/简称子串（LLM 筛选已关闭）' if news_llm_filter_disabled() else 'LLM 语义筛选（已取消行业名子串匹配）'}"
-        f" | ⑥⑦：**该股 ts_code** 的公告与研报（⑦ 另含与 ``stock_basic`` 行业名一致的 **行业研报** 抽样）"
+        f" | ①②③⑥⑦：相对结束日 **{NEWS_IRM_NPR_REPORT_LOOKBACK_CAL_DAYS} 自然日**"
         f" | ⑧：{'Qdrant 宏观专题（与④⑤ **时间窗一致**、query 分离）' if sec8 else '（未生成：关闭 Qdrant 或 ``news_macro_section8_enabled`` 或未命中）'}"
     )
     blocks = [
@@ -1163,7 +1185,8 @@ def _get_tushare_news_without_ts_code(
         "> **说明**：标的无法解析为 A 股 Tushare 代码；**无 e互动**与 ``stock_basic``。"
         "``npr`` 为国家政策库（非个股新闻）。\n\n"
     )
-    sec3 = _npr_policy_lines(win_start, win_end, [], max_rows=25)
+    npr_hist_start, npr_hist_end, _, _ = _irm_npr_report_window_from_end(end_date)
+    sec3 = _npr_policy_lines(npr_hist_start, npr_hist_end, [], max_rows=25)
     cfg = get_config()
     lb = int(cfg.get("news_long_short_lookback_days", 30))
     win_45_start, win_45_end = _long_short_window_strs(start_date, end_date, lb)
@@ -1205,7 +1228,7 @@ def _get_tushare_news_without_ts_code(
     blocks = [
         f"## Tushare 语料（未识别为 A 股）— `{ticker}`\n\n"
         f"请输入 **6 位 A 股**代码（如 600519 / 600519.SH / 000001.SZ）。\n\n"
-        f"窗口: {start_date} ~ {end_date}",
+        f"窗口: {start_date} ~ {end_date} | ③ ``npr``：相对 **{end_date}** 回溯 **{NEWS_IRM_NPR_REPORT_LOOKBACK_CAL_DAYS}** 自然日",
         f"### ①② 互动问答（irm_qa_sh / irm_qa_sz）\n\n"
         "（跳过：需要 A 股 ``ts_code``。）",
         f"### ③ 国家政策库（npr）\n\n{npr_hint}"
@@ -1236,6 +1259,7 @@ def get_tushare_global_news(
 ) -> str:
     """全局语料：国家政策库 ``npr`` + 长篇 ``major_news`` + 短讯 ``news`` + **⑧ 宏观向量专题** + 研报抽样（``research_report``）。
 
+    **``npr`` 与研报抽样**：相对 ``curr_date``（即 ``end_date``）固定回溯 ``NEWS_IRM_NPR_REPORT_LOOKBACK_CAL_DAYS``（90）自然日；④⑤ 新闻仍使用 ``look_back_days``。
     互动问答、上市公司公告（``anns_d``）需 ``ts_code``，此处不调用；请对具体标的使用 ``get_tushare_news``。
     """
     curr = datetime.strptime(curr_date, "%Y-%m-%d")
@@ -1257,7 +1281,8 @@ def get_tushare_global_news(
 
     per_major = max(6, min(20, limit // 4))
     per_flash = max(8, min(25, limit // 3))
-    sec_npr = _npr_policy_lines(win_start, win_end, [], max_rows=max(30, min(80, limit)))
+    npr_w0, npr_w1, rr_d0_90, rr_d1_90 = _irm_npr_report_window_from_end(end_date)
+    sec_npr = _npr_policy_lines(npr_w0, npr_w1, [], max_rows=max(30, min(80, limit)))
 
     cfg = get_config()
     lb = int(cfg.get("news_long_short_lookback_days", 30))
@@ -1288,7 +1313,7 @@ def get_tushare_global_news(
             win_start, win_end, match_broad, flash_srcs, per_src_cap=per_flash
         )
     sec_rr = _research_report_global_lines(
-        d0, d1, match_broad, max_rows=max(24, min(48, limit))
+        rr_d0_90, rr_d1_90, match_broad, max_rows=max(24, min(48, limit))
     )
 
     ph = "（本期无返回数据或未命中宏观/市场类关键词。）"
@@ -1297,8 +1322,9 @@ def get_tushare_global_news(
     sec8 = _macro_section8_block(cfg, win_start=win_45_start, win_end=win_45_end)
 
     blocks = [
-        f"## Tushare 全局语料（npr + major_news + news + ⑧ + research_report）\n\n{win_start} — {win_end}"
-        f" | ⑧/Qdrant④⑤ 向量子窗: {win_45_start[:10]} ~ {win_45_end[:10]}（最长 {lb} 天）\n\n"
+        f"## Tushare 全局语料（npr + major_news + news + ⑧ + research_report）\n\n④⑤：**{win_start} — {win_end}**"
+        f" | ``npr`` / 研报：**截至 {end_date} 回溯 {NEWS_IRM_NPR_REPORT_LOOKBACK_CAL_DAYS} 自然日**"
+        f" | ⑧/Qdrant④⑤ 子窗：**{win_45_start[:10]} ~ {win_45_end[:10]}（最长 {lb} 天）**\n\n"
         "> **说明**：本接口为**宏观与市场要闻**；`npr` 为政策法规库，**不是按股票代码的个股新闻**。"
         "④⑤ 为市场类要闻（与 ``get_tushare_news`` 中按标的检索的 ④⑤ query 不同）；**⑧** 为 **宏观专用 query** 的向量专题。"
         "``anns_d`` 全量公告需标的代码，请用 ``get_tushare_news``。\n",
