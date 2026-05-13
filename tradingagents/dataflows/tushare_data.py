@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import logging
 import os
+import io
+import importlib
+from pathlib import Path
 from datetime import datetime, timedelta
 import hashlib
 import json
 from typing import Annotated
 
 import pandas as pd
+import requests
 from dateutil.relativedelta import relativedelta
 from stockstats import wrap
 
@@ -26,16 +30,17 @@ from .utils import safe_ticker_component
 logger = logging.getLogger(__name__)
 
 _RUN_NEWS_TOOL_CACHE: dict[str, str] = {}
+_RUN_RESEARCH_PDF_CACHE: dict[str, dict] = {}
 
-# 上证 e 互动 / 深证互动易 / 国家政策库 ``npr`` / 研报 ``research_report`` / 公告 ``anns_d``：相对 **分析结束日** 固定回溯 90 个自然日（与 ④⑤/⑧ 的窗口独立）。
+# 上证 e 互动 / 深证互动易 / 研报 ``research_report``：相对 **分析结束日** 固定回溯 90 个自然日（与 ④⑤/⑧ 的窗口独立）。
 NEWS_IRM_NPR_REPORT_LOOKBACK_CAL_DAYS = 90
 
 
 def _irm_npr_report_window_from_end(end_date: str) -> tuple[str, str, str, str]:
-    """返回 ``npr`` 与时间型接口用的时间串及 Tushare ``YYYYMMDD`` 起止。
+    """返回时间型接口用的时间串及 Tushare ``YYYYMMDD`` 起止。
 
     窗口 ``[end_date - 90 自然日 00:00:00, end_date 23:59:59]``（含端点）。
-    用于 ①② ``irm_qa``、③ ``npr``、⑥ ``anns_d``、⑦ ``research_report``。
+    用于 ①② ``irm_qa``、⑦ ``research_report``。
     """
     end_s = str(end_date)[:10]
     end_dt = pd.Timestamp(end_s)
@@ -158,50 +163,6 @@ def _irm_qa_lines(ts_code: str, d0: str, d1: str, api_name: str, label: str) -> 
             f"### [{label}] {ts}\n**问** {r.get('q', '')}\n**答** {r.get('a', '')}\n"
         )
     return out
-
-
-def _npr_policy_lines(
-    start_win: str,
-    end_win: str,
-    keywords: list[str],
-    *,
-    max_rows: int = 30,
-) -> list[str]:
-    """国家政策库 ``npr`` — National Policy Repository (skill: 国家政策库).
-
-    ``start_win`` / ``end_win`` use ``YYYY-MM-DD HH:MM:SS`` as in Tushare docs.
-
-    ``keywords`` 用于在标题中优先排序；**政策法规本身不是「个股新闻」接口**，
-    若 ``keywords`` 为空则按时间返回窗口内政策条目（宏观与监管背景）。
-    """
-    df = _try_pro_call(
-        "npr",
-        start_date=start_win,
-        end_date=end_win,
-        fields="pubtime,title,pcode,puborg,ptype",
-    )
-    if df is None or df.empty:
-        return []
-    matched: list[str] = []
-    other: list[str] = []
-    for _, r in df.iterrows():
-        title = str(r.get("title", ""))
-        blob = f"{title}{r.get('ptype', '')}{r.get('puborg', '')}"
-        pubt = r.get("pubtime", r.get("pub_time", ""))
-        line = (
-            f"### {pubt} | {r.get('puborg', '')}\n"
-            f"{title}\n"
-            f"发文字号: {r.get('pcode', '')} | 主题: {r.get('ptype', '')}\n"
-        )
-        if keywords and any(k and k in blob for k in keywords):
-            matched.append(line)
-        else:
-            other.append(line)
-    take_kw = min(len(matched), max_rows // 2 + 10)
-    out = matched[:take_kw]
-    rest_n = max(0, max_rows - len(out))
-    out.extend(other[:rest_n])
-    return out[:max_rows]
 
 
 def _major_news_lines(
@@ -358,27 +319,6 @@ def _flash_news_collect_raw(
     return out
 
 
-def _anns_d_lines(ts_code: str, d0: str, d1: str, *, max_rows: int = 28) -> list[str]:
-    """上市公司全量公告 ``anns_d``（日期 ``YYYYMMDD``）。"""
-    df = _try_pro_call("anns_d", ts_code=ts_code, start_date=d0, end_date=d1)
-    if df is None or df.empty:
-        return []
-    if "ann_date" in df.columns:
-        df = df.sort_values("ann_date", ascending=False)
-    out: list[str] = []
-    for _, r in df.head(max_rows).iterrows():
-        ad = r.get("ann_date", "")
-        title = str(r.get("title", "")).strip()
-        name = str(r.get("name", "")).strip()
-        url = str(r.get("url", "")).strip()
-        rec = r.get("rec_time", "")
-        head = f"### {ad}"
-        if rec:
-            head += f" | {rec}"
-        out.append(f"{head}\n**{name}** ({r.get('ts_code', '')})\n{title}\n{url}\n")
-    return out
-
-
 def _research_report_lines(
     ts_code: str,
     industry: str,
@@ -389,8 +329,284 @@ def _research_report_lines(
     max_industry: int = 10,
 ) -> list[str]:
     """券商研报 ``research_report``；个股 + 可选行业（``ind_name`` 与库内一致时才有命中）。"""
+    cfg = get_config()
+    use_pdf = bool(cfg.get("news_research_pdf_extract_enabled", True))
+    pdf_timeout = float(cfg.get("news_research_pdf_timeout_sec", 20))
+    pdf_max_bytes = int(cfg.get("news_research_pdf_max_bytes", 15_000_000))
+    pdf_text_max_chars = int(cfg.get("news_research_pdf_text_max_chars", 24_000))
+    pdf_page_limit = int(cfg.get("news_research_pdf_page_limit", 80))
     out: list[str] = []
     seen: set[str] = set()
+
+    def _append_pdf_diag_row(row: dict) -> None:
+        try:
+            from .run_trace_context import trace_report_dir
+
+            base = trace_report_dir.get()
+            if base is None:
+                return
+            trace_sub = Path(base) / "trace"
+            trace_sub.mkdir(parents=True, exist_ok=True)
+            path = trace_sub / "research_pdf_extract.jsonl"
+            payload = dict(row)
+            payload.setdefault("ts", datetime.now().isoformat())
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        except Exception:
+            return
+
+    def _save_pdf_artifacts(
+        *,
+        url: str,
+        trade_date: str,
+        report_type: str,
+        title: str,
+        pdf_bytes: bytes | None,
+        text: str,
+    ) -> tuple[str, str]:
+        try:
+            from .run_trace_context import trace_report_dir
+
+            base = trace_report_dir.get()
+            if base is None:
+                return "", ""
+            trace_sub = Path(base) / "trace" / "research_pdf_artifacts"
+            pdf_dir = trace_sub / "pdf"
+            txt_dir = trace_sub / "text"
+            pdf_dir.mkdir(parents=True, exist_ok=True)
+            txt_dir.mkdir(parents=True, exist_ok=True)
+            key = hashlib.sha256(f"{trade_date}|{report_type}|{title}|{url}".encode("utf-8")).hexdigest()[:16]
+            prefix = f"{trade_date}_{key}"
+            pdf_path = pdf_dir / f"{prefix}.pdf"
+            txt_path = txt_dir / f"{prefix}.txt"
+            if pdf_bytes and not pdf_path.exists():
+                pdf_path.write_bytes(pdf_bytes)
+            if text and not txt_path.exists():
+                txt_path.write_text(text, encoding="utf-8")
+            return str(pdf_path), str(txt_path)
+        except Exception:
+            return "", ""
+
+    def _extract_pdf_text(url: str, *, trade_date: str, report_type: str, title: str) -> str:
+        u = str(url or "").strip()
+        if not use_pdf or not u:
+            return ""
+        cached = _RUN_RESEARCH_PDF_CACHE.get(u)
+        if isinstance(cached, dict):
+            _append_pdf_diag_row(
+                {
+                    "kind": "research_pdf_extract",
+                    "url": u,
+                    "trade_date": trade_date,
+                    "report_type": report_type,
+                    "title": title,
+                    "from_cache": True,
+                    "download_ok": bool(cached.get("download_ok", False)),
+                    "parse_ok": bool(cached.get("parse_ok", False)),
+                    "download_bytes": int(cached.get("download_bytes", 0) or 0),
+                    "text_chars": len(str(cached.get("text", "") or "")),
+                    "pdf_path": str(cached.get("pdf_path", "") or ""),
+                    "text_path": str(cached.get("text_path", "") or ""),
+                    "error": str(cached.get("error", "") or ""),
+                }
+            )
+            return str(cached.get("text", "") or "")
+        try:
+            resp = requests.get(
+                u,
+                timeout=pdf_timeout,
+                headers={"User-Agent": "TradingAgents/1.0 (+research-report-pdf)"},
+            )
+            resp.raise_for_status()
+            content = resp.content or b""
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("⑦ 研报PDF下载失败 url=%s err=%s", u, exc)
+            _RUN_RESEARCH_PDF_CACHE[u] = {
+                "text": "",
+                "download_ok": False,
+                "parse_ok": False,
+                "download_bytes": 0,
+                "pdf_path": "",
+                "text_path": "",
+                "error": str(exc),
+            }
+            _append_pdf_diag_row(
+                {
+                    "kind": "research_pdf_extract",
+                    "url": u,
+                    "trade_date": trade_date,
+                    "report_type": report_type,
+                    "title": title,
+                    "from_cache": False,
+                    "download_ok": False,
+                    "parse_ok": False,
+                    "download_bytes": 0,
+                    "text_chars": 0,
+                    "pdf_path": "",
+                    "text_path": "",
+                    "error": str(exc),
+                }
+            )
+            return ""
+        if not content:
+            _RUN_RESEARCH_PDF_CACHE[u] = {
+                "text": "",
+                "download_ok": False,
+                "parse_ok": False,
+                "download_bytes": 0,
+                "pdf_path": "",
+                "text_path": "",
+                "error": "empty_content",
+            }
+            _append_pdf_diag_row(
+                {
+                    "kind": "research_pdf_extract",
+                    "url": u,
+                    "trade_date": trade_date,
+                    "report_type": report_type,
+                    "title": title,
+                    "from_cache": False,
+                    "download_ok": False,
+                    "parse_ok": False,
+                    "download_bytes": 0,
+                    "text_chars": 0,
+                    "pdf_path": "",
+                    "text_path": "",
+                    "error": "empty_content",
+                }
+            )
+            return ""
+        if len(content) > pdf_max_bytes:
+            logger.warning(
+                "⑦ 研报PDF过大，跳过正文解析 url=%s bytes=%s cap=%s",
+                u,
+                len(content),
+                pdf_max_bytes,
+            )
+            pdf_path, _ = _save_pdf_artifacts(
+                url=u,
+                trade_date=trade_date,
+                report_type=report_type,
+                title=title,
+                pdf_bytes=content,
+                text="",
+            )
+            _RUN_RESEARCH_PDF_CACHE[u] = {
+                "text": "",
+                "download_ok": True,
+                "parse_ok": False,
+                "download_bytes": len(content),
+                "pdf_path": pdf_path,
+                "text_path": "",
+                "error": "pdf_too_large",
+            }
+            _append_pdf_diag_row(
+                {
+                    "kind": "research_pdf_extract",
+                    "url": u,
+                    "trade_date": trade_date,
+                    "report_type": report_type,
+                    "title": title,
+                    "from_cache": False,
+                    "download_ok": True,
+                    "parse_ok": False,
+                    "download_bytes": len(content),
+                    "text_chars": 0,
+                    "pdf_path": pdf_path,
+                    "text_path": "",
+                    "error": "pdf_too_large",
+                }
+            )
+            return ""
+        try:
+            pypdf_mod = importlib.import_module("pypdf")
+            reader = pypdf_mod.PdfReader(io.BytesIO(content))
+            chunks: list[str] = []
+            total = 0
+            for page in reader.pages[: max(1, pdf_page_limit)]:
+                text = (page.extract_text() or "").strip()
+                if not text:
+                    continue
+                if total >= pdf_text_max_chars:
+                    break
+                remain = max(0, pdf_text_max_chars - total)
+                if len(text) > remain:
+                    text = text[:remain]
+                chunks.append(text)
+                total += len(text)
+            txt = "\n\n".join(chunks).strip()
+            pdf_path, txt_path = _save_pdf_artifacts(
+                url=u,
+                trade_date=trade_date,
+                report_type=report_type,
+                title=title,
+                pdf_bytes=content,
+                text=txt,
+            )
+            _RUN_RESEARCH_PDF_CACHE[u] = {
+                "text": txt,
+                "download_ok": True,
+                "parse_ok": True,
+                "download_bytes": len(content),
+                "pdf_path": pdf_path,
+                "text_path": txt_path,
+                "error": "",
+            }
+            _append_pdf_diag_row(
+                {
+                    "kind": "research_pdf_extract",
+                    "url": u,
+                    "trade_date": trade_date,
+                    "report_type": report_type,
+                    "title": title,
+                    "from_cache": False,
+                    "download_ok": True,
+                    "parse_ok": True,
+                    "download_bytes": len(content),
+                    "text_chars": len(txt),
+                    "pdf_path": pdf_path,
+                    "text_path": txt_path,
+                    "error": "",
+                }
+            )
+            return txt
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("⑦ 研报PDF解析失败 url=%s err=%s", u, exc)
+            pdf_path, _ = _save_pdf_artifacts(
+                url=u,
+                trade_date=trade_date,
+                report_type=report_type,
+                title=title,
+                pdf_bytes=content,
+                text="",
+            )
+            _RUN_RESEARCH_PDF_CACHE[u] = {
+                "text": "",
+                "download_ok": True,
+                "parse_ok": False,
+                "download_bytes": len(content),
+                "pdf_path": pdf_path,
+                "text_path": "",
+                "error": str(exc),
+            }
+            _append_pdf_diag_row(
+                {
+                    "kind": "research_pdf_extract",
+                    "url": u,
+                    "trade_date": trade_date,
+                    "report_type": report_type,
+                    "title": title,
+                    "from_cache": False,
+                    "download_ok": True,
+                    "parse_ok": False,
+                    "download_bytes": len(content),
+                    "text_chars": 0,
+                    "pdf_path": pdf_path,
+                    "text_path": "",
+                    "error": str(exc),
+                }
+            )
+            return ""
 
     df_s = _try_pro_call(
         "research_report",
@@ -410,10 +626,18 @@ def _research_report_lines(
                 continue
             seen.add(key)
             abstr = str(r.get("abstr", "")).strip()
+            url = str(r.get("url", "")).strip()
+            pdf_text = _extract_pdf_text(
+                url,
+                trade_date=str(td),
+                report_type=str(r.get("report_type", "") or "个股研报"),
+                title=title,
+            )
             out.append(
                 f"### {td} | {r.get('inst_csname', '')} [{r.get('report_type', '')}]\n**{title}**\n"
                 f"{r.get('name', '')} ({r.get('ts_code', '')}) | {r.get('author', '')}\n{abstr}\n"
-                f"{str(r.get('url', '')).strip()}\n"
+                f"{url}\n"
+                + (f"\n--- PDF正文提取 ---\n{pdf_text}\n" if pdf_text else "")
             )
 
     ind = (industry or "").strip()
@@ -436,10 +660,18 @@ def _research_report_lines(
                     continue
                 seen.add(key)
                 abstr = str(r.get("abstr", "")).strip()
+                url = str(r.get("url", "")).strip()
+                pdf_text = _extract_pdf_text(
+                    url,
+                    trade_date=str(td),
+                    report_type=str(r.get("report_type", "") or "行业研报"),
+                    title=title,
+                )
                 out.append(
                     f"### {td} | {r.get('inst_csname', '')} [{r.get('report_type', '')}]\n**{title}**\n"
                     f"{r.get('ind_name', '')} | {r.get('author', '')}\n{abstr}\n"
-                    f"{str(r.get('url', '')).strip()}\n"
+                    f"{url}\n"
+                    + (f"\n--- PDF正文提取 ---\n{pdf_text}\n" if pdf_text else "")
                 )
     return out
 
@@ -485,14 +717,26 @@ def _refine_research_report_lines_with_llm(
     per_item_cap = max(600, min(1800, out_cap // min(n_reports, 6)))
     item_system = f"""你是A股卖方研报编辑。输入是一篇研报条目，请只提取对当前标的有价值的信息。
 
-重点：
-1) 个股盈利（收入/利润/增速、盈利驱动、盈利预测变化）
-2) 行业盈利与景气（供需、价格、成本、周期与边际变化）
-3) 评级/目标价/估值口径变化、关键催化与风险
+重点（必须优先）：
+1) 关键预期：机构对未来1-4个季度/1-2年的核心判断（需求、价格、份额、产品放量、订单、政策、产能、出海等）
+2) 大概率将发生的事件：时间点、触发条件、验证路径（如新品发布、产能投放、招投标、价格拐点、监管落地）
+3) 风险点：导致预期落空的主要风险、发生条件、可能后果
+4) 产品与竞争：产品特性、护城河（技术/渠道/品牌/成本/生态/资质等）、相对竞品的比较优势或劣势
+
+时效性规则（必须执行）：
+1) 明确标注研报发布日期（trade_date/pub_time）；无日期时标注“日期缺失”并降置信度。
+2) 同一主题若出现新旧观点冲突，优先采用最新日期观点，并一句话说明“旧 -> 新”的变化。
+3) 近期（近30-60天）信息优先于更早信息；较旧信息仅在解释趋势延续时保留。
+4) 输出结论必须带时间锚点（如“截至2026-05-12”“Q3前后”），避免无时点判断。
+
+明确不要：
+- 不做财务面总结（收入/利润/估值/目标价/评级变动等仅在直接支撑“预期或风险”时一句带过）。
+- 不做技术面总结（K线、均线、形态、成交量、技术指标等）。
 
 要求：
-- 只依据输入，不编造数字。
-- 尽量保留时间、机构名、关键数值与方向（上调/下调）。
+- 只依据输入，不编造信息。
+- 尽量保留时间、机构名、关键条件与方向（上调/下调、改善/恶化）。
+- 优先输出“结论+依据”，避免流水账复述。
 - 不要输出代码围栏。
 - 输出 <= {per_item_cap} 字符。"""
     item_results: list[str] = []
@@ -522,7 +766,22 @@ def _refine_research_report_lines_with_llm(
     # 第2阶段：若总长度超限，对“逐篇精简结果”继续全局压缩（最多 3 轮）
     current = merged
     global_system = """你是A股研究总编。输入是“多篇研报逐篇精简结果”的合集，请做全局去重与归纳。
-必须突出：个股盈利、行业盈利与景气、估值/评级变化、关键催化与风险、待验证点。
+必须突出：
+1) 跨研报一致的核心预期（以及分歧点）
+2) 未来大概率事件的时间线、触发条件、先行验证信号
+3) 主要风险清单（触发条件+影响路径+优先级）
+4) 产品特性、护城河与相对竞争优势（含可能被削弱的因素）
+
+时效性规则（必须执行）：
+1) 先做按日期排序再归纳：新到旧。
+2) 同一议题出现冲突时，默认“最新研报观点优先”，并明确写出被替代的旧观点。
+3) 输出需区分“近期已验证/正在验证/远期假设”三类，避免把历史结论当作当前结论。
+4) 每个关键结论都要保留日期锚点（至少到天或周）。
+
+明确不要：
+- 不单独展开财务面总结（收入/利润/估值/目标价/评级等）。
+- 不单独展开技术面总结（任何技术指标与走势形态）。
+
 只基于输入，不编造；不要代码围栏。"""
     for _ in range(3):
         if len(current) <= out_cap:
@@ -1064,10 +1323,10 @@ def get_tushare_news(
     start_date: str,
     end_date: str,
 ) -> str:
-    """个股新闻语料（不含全局宏观包）：①②④⑤⑥⑦。
+    """个股新闻语料（不含全局宏观包）：①②④⑤⑦。
 
-    - ``get_global_news`` 专门承担 **③ 国家政策库** 与 **⑧ 宏观向量专题**。
-    - 本函数仅返回：①② 互动问答、④⑤（Qdrant 合并召回）、⑥ 上市公司公告、⑦ 券商研报（个股+行业）。
+    - ``get_global_news`` 专门承担 **⑧ 宏观向量专题**。
+    - 本函数仅返回：①② 互动问答、④⑤（Qdrant 合并召回）、⑦ 券商研报（个股+行业）。
     - ④⑤ 为 Qdrant-only：检索失败直接报错，不回退 Tushare。
     """
     cfg = get_config()
@@ -1171,7 +1430,6 @@ def get_tushare_news(
         match_fn=lambda _t, _c: True,
     )
 
-    sec6 = _anns_d_lines(ts_code, irm_rr_d0, irm_rr_d1)
     sec7_raw = _research_report_lines(ts_code, industry, irm_rr_d0, irm_rr_d1)
     sec7 = _refine_research_report_lines_with_llm(
         ticker=ticker,
@@ -1186,17 +1444,16 @@ def get_tushare_news(
         f"窗口: {start_date} ~ {end_date} | ④⑤ 子窗: {win_45_start[:10]} ~ {win_45_end[:10]}（最长 {lb} 天）| "
         "④⑤ 数据源：**Qdrant** 向量库 | "
         "匹配/筛选：向量召回（无代码/简称二次过滤）"
-        f" | ①②⑥⑦：相对结束日 **{NEWS_IRM_NPR_REPORT_LOOKBACK_CAL_DAYS} 自然日**"
+        f" | ①②⑦：相对结束日 **{NEWS_IRM_NPR_REPORT_LOOKBACK_CAL_DAYS} 自然日**"
     )
     blocks = [
-        f"## Tushare 个股语料（①②④⑤⑥⑦）— {ticker} / {ts_code}\n\n{news_hdr}",
+        f"## Tushare 个股语料（①②④⑤⑦）— {ticker} / {ts_code}\n\n{news_hdr}",
         f"### ① 互动问答 · 上证e互动（irm_qa_sh）\n\n" + ("\n".join(sec1) if sec1 else ph),
         f"### ② 互动问答 · 深证互动易（irm_qa_sz）\n\n" + ("\n".join(sec2) if sec2 else ph),
         f"### ④ 新闻快讯 · 长篇通讯（major_news）\n\n"
         + ("\n".join(sec4) if sec4 else ph),
         f"### ⑤ 新闻快讯 · 短讯（news）\n\n"
         + ("\n".join(sec5) if sec5 else ph),
-        f"### ⑥ 上市公司公告（anns_d）\n\n" + ("\n".join(sec6) if sec6 else ph),
         f"### ⑦ 券商研究报告（research_report，LLM精简≤{int(cfg.get('news_research_llm_output_max_chars', 5000))}字）\n\n"
         + (
             "> **说明**：行业研报依赖 ``ind_name`` 与研报库内名称一致；若仅有个股研报无行业条属正常。\n\n"
@@ -1205,11 +1462,11 @@ def get_tushare_news(
         )
         + (sec7 if sec7 else ph),
     ]
-    if not (sec1 or sec2 or sec4 or sec5 or sec6 or sec7):
+    if not (sec1 or sec2 or sec4 or sec5 or sec7):
         blocks.append(
             "\n---\n**说明**：多项为空时，常见原因包括：未开通大模型语料类接口权限（见 "
             "https://tushare.pro/wctapi/documents/290.md ）；该时段数据源无返回；"
-            "e互动仅覆盖上证/深证互动平台；``anns_d`` / ``research_report`` 需单独语料权限。"
+            "e互动仅覆盖上证/深证互动平台；``research_report`` 需单独语料权限。"
             f"（公司简称：{stock_name or '未取到'}；行业：{industry or '未取到'}）"
         )
     body = "\n\n".join(blocks).strip()
@@ -1225,7 +1482,7 @@ def _get_tushare_news_without_ts_code(
     win_end: str,
     ph: str,
 ) -> str:
-    """无法解析为 A 股 ``ts_code`` 时，仅返回 ④⑤ 新闻语料（不含 ③/⑧）。"""
+    """无法解析为 A 股 ``ts_code`` 时，仅返回 ④⑤ 新闻语料（不含 ⑧）。"""
     raw = (ticker or "").strip()
     loose_kw = [x for x in (raw, raw.upper()) if x]
 
@@ -1264,8 +1521,6 @@ def _get_tushare_news_without_ts_code(
         f"### ④ 新闻快讯 · 长篇（major_news）\n\n"
         + ("\n".join(sec4) if sec4 else ph),
         f"### ⑤ 新闻快讯 · 短讯（news）\n\n" + ("\n".join(sec5) if sec5 else ph),
-        "### ⑥ 上市公司公告（anns_d）\n\n"
-        "（跳过：需要 A 股 ``ts_code``；请使用 ``get_tushare_news`` 并传入可解析代码。）",
         "### ⑦ 券商研究报告（research_report）\n\n"
         "（跳过：需要 ``ts_code``；全局宏观语料见 ``get_tushare_global_news``。）",
     ]
@@ -1277,7 +1532,7 @@ def get_tushare_global_news(
     look_back_days: int = 7,
     limit: int = 50,
 ) -> str:
-    """全局语料：仅 **③ 国家政策库（npr）** + **⑧ 宏观向量专题**。"""
+    """全局语料：仅 **⑧ 宏观向量专题**。"""
     cfg = get_config()
     cache_key = _news_tool_cache_key(
         "get_global_news",
@@ -1308,9 +1563,6 @@ def get_tushare_global_news(
     start_date = start.strftime("%Y-%m-%d")
     end_date = curr.strftime("%Y-%m-%d")
 
-    npr_w0, npr_w1, _, _ = _irm_npr_report_window_from_end(end_date)
-    sec_npr = _npr_policy_lines(npr_w0, npr_w1, [], max_rows=max(30, min(80, limit)))
-
     lb = int(cfg.get("news_long_short_lookback_days", 30))
     win_45_start, win_45_end = _long_short_window_strs(start_date, end_date, lb)
     from .news_qdrant_retrieval import news_long_short_use_qdrant
@@ -1326,11 +1578,9 @@ def get_tushare_global_news(
         raise TushareVendorError("⑧ 宏观向量专题未生成（可能未命中语料或未开启）。")
 
     blocks = [
-        f"## Tushare 全局语料（npr + ⑧）\n\n"
-        f"`npr`：截至 {end_date} 回溯 {NEWS_IRM_NPR_REPORT_LOOKBACK_CAL_DAYS} 自然日"
-        f" | ⑧ 子窗：{win_45_start[:10]} ~ {win_45_end[:10]}（最长 {lb} 天）\n\n"
-        "> **说明**：本接口只提供全局宏观语料（③ + ⑧）。个股/竞品新闻、公告、研报请使用 ``get_tushare_news``。\n",
-        f"### 国家政策库（npr）\n\n" + ("\n".join(sec_npr) if sec_npr else ph),
+        f"## Tushare 全局语料（⑧）\n\n"
+        f"⑧ 子窗：{win_45_start[:10]} ~ {win_45_end[:10]}（最长 {lb} 天）\n\n"
+        "> **说明**：本接口只提供全局宏观语料（⑧）。个股/竞品新闻与研报请使用 ``get_tushare_news``。\n",
         sec8,
     ]
     body = "\n\n".join(blocks).strip()

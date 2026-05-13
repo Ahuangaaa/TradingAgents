@@ -95,6 +95,7 @@ def fetch_tushare_news(days: int = 31) -> pd.DataFrame:
     start = end - timedelta(days=int(days))
     start_str = start.strftime("%Y-%m-%d 00:00:00")
     end_str = end.strftime("%Y-%m-%d 23:59:59")
+    start_ts = int(pd.to_datetime(start_str, errors="coerce").timestamp())
     logger.info(
         "Tushare: lookback=%s days, window=[%s .. %s] fetch_concurrency=%s",
         int(days),
@@ -141,9 +142,17 @@ def fetch_tushare_news(days: int = 31) -> pd.DataFrame:
     else:
         out["pub_time"] = ""
 
-    out["pub_ts"] = out["pub_time"].map(_parse_ts)
-    now_ts = int(datetime.now().timestamp())
-    out["pub_ts"] = out["pub_ts"].fillna(now_ts).astype(int)
+    pub_ts_raw = out["pub_time"].map(_parse_ts)
+    missing_mask = pub_ts_raw.isna()
+    missing_n = int(missing_mask.sum())
+    if missing_n:
+        logger.warning(
+            "Tushare: pub_ts parse failed for %s rows; fallback to window start ts=%s (not now)",
+            missing_n,
+            start_ts,
+        )
+    out["pub_ts_inferred"] = missing_mask.astype(int)
+    out["pub_ts"] = pub_ts_raw.fillna(start_ts).astype(int)
 
     # Missing title/content from API are NaN; ``astype(str)`` alone becomes the literal ``"nan"`` string.
     if "title" in out.columns:

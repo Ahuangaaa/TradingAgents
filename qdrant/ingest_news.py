@@ -163,6 +163,7 @@ def build_points(df, vectors: list[list[float]], ingestion_date: str) -> list[Po
             "content": str(getattr(row, "content", "") or "")[:8000],
             "pub_time": str(getattr(row, "pub_time", "") or ""),
             "pub_ts": int(getattr(row, "pub_ts", 0) or 0),
+            "pub_ts_inferred": int(getattr(row, "pub_ts_inferred", 0) or 0),
             "ingestion_date": ingestion_date,
             "source": str(getattr(row, "src", "") or ""),
             "source_type": str(getattr(row, "source_type", "") or ""),
@@ -208,6 +209,13 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     if df.empty:
         logger.info("No rows from Tushare; exiting.")
         return 0
+    if "pub_ts_inferred" in df.columns:
+        inferred_n = int(df["pub_ts_inferred"].sum())
+        if inferred_n:
+            logger.warning(
+                "[1/6] pub_ts inferred rows=%s (fallback used for unparseable pub_time)",
+                inferred_n,
+            )
 
     logger.info(
         "[2/6][3/6] Parallel HTML strip → parallel DeepSeek tagging (see news_llm_tags for substeps) …"

@@ -70,10 +70,18 @@ DEFAULT_CONFIG = {
     "news_long_short_use_qdrant": True,
     "news_qdrant_search_limit": 200,
     "news_qdrant_per_route_limit": 40,
+    # Minimum similarity score for Qdrant merged hits (0 disables threshold).
+    "news_qdrant_min_score": 0.15,
     # ⑦ 研报：LLM 精简（个股+行业）输出长度硬上限
     "news_research_llm_refine": True,
     "news_research_llm_input_max_chars": 30000,
     "news_research_llm_output_max_chars": 5000,
+    # ⑦ 研报：下载 PDF 并提取正文（失败自动回退 abstr）
+    "news_research_pdf_extract_enabled": True,
+    "news_research_pdf_timeout_sec": 20,
+    "news_research_pdf_max_bytes": 15000000,
+    "news_research_pdf_text_max_chars": 24000,
+    "news_research_pdf_page_limit": 80,
     "news_macro_vector_terms_per_query": 8,
     # ⑧ 宏观向量专题（专用检索词 + 可选 LLM；与 ④⑤ query 分离）
     "news_macro_section8_enabled": True,

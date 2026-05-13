@@ -11,8 +11,8 @@ def get_news(
     """
     Retrieve **company-focused** corpus for a given ticker.
     Uses the configured news_data vendor. One response aggregates:
-    ①② interactive Q&A + ④⑤ company/peer news (Qdrant merged retrieval) + ⑥ announcements + ⑦ research reports
-    (stock + industry). This tool does **not** include global ③ policy-only block or ⑧ macro vector topic.
+    ①② interactive Q&A + ④⑤ company/peer news (Qdrant merged retrieval) + ⑦ research reports
+    (stock + industry). This tool does **not** include global ⑧ macro vector topic.
     Qdrant-only mode is required for ④⑤ (no fallback path).
 
     Official Tushare API docs (use ``fetch_url`` on tushare.pro to align field meanings per section):
@@ -20,7 +20,6 @@ def get_news(
     news — https://tushare.pro/wctapi/documents/143.md
     irm_qa_sh — https://tushare.pro/wctapi/documents/366.md
     irm_qa_sz —  https://tushare.pro/wctapi/documents/367.md
-    anns_d —  https://tushare.pro/wctapi/documents/176.md
     research_report —  https://tushare.pro/wctapi/documents/415.md
 
     Args:
@@ -39,13 +38,12 @@ def get_global_news(
     limit: Annotated[int, "Maximum number of articles to return"] = 5,
 ) -> str:
     """
-    Retrieve **global macro** corpus only: ③ national policy repository (``npr``) + ⑧ macro vector topic.
-    This path does not include ticker-scoped ①②, ④⑤, ⑥, or ⑦ blocks.
+    Retrieve **global macro** corpus only: ⑧ macro vector topic.
+    This path does not include ticker-scoped ①②, ④⑤, or ⑦ blocks.
     Qdrant-only mode is required for section ⑧.
 
     Official Tushare API docs (use ``fetch_url`` on tushare.pro to align field meanings):
-    npr — https://tushare.pro/wctapi/documents/406.md
-    For company/peer corpus (①②④⑤⑥⑦), use ``get_news``.
+    For company/peer corpus (①②④⑤⑦), use ``get_news``.
 
     Args:
         curr_date (str): Current date in yyyy-mm-dd format

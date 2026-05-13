@@ -42,7 +42,43 @@ def ensure_collection(
     distance: Distance = Distance.COSINE,
 ) -> None:
     if name in collection_names(client):
-        logger.info("Qdrant: collection %r already exists — skip create", name)
+        # Existing collection must match the current embedding contract.
+        try:
+            info = client.get_collection(name)
+            vectors_cfg = getattr(getattr(info, "config", None), "params", None)
+            vectors_cfg = getattr(vectors_cfg, "vectors", None)
+            if isinstance(vectors_cfg, dict):
+                vectors_cfg = next(iter(vectors_cfg.values()), None)
+            existing_size = getattr(vectors_cfg, "size", None)
+            existing_distance = getattr(vectors_cfg, "distance", None)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"Qdrant: failed to inspect existing collection {name!r}: {exc}"
+            ) from exc
+
+        if existing_size is None or existing_distance is None:
+            raise RuntimeError(
+                f"Qdrant: cannot verify schema for existing collection {name!r} "
+                "(missing vector params)."
+            )
+        if int(existing_size) != int(vector_size):
+            raise ValueError(
+                f"Qdrant collection {name!r} vector size mismatch: "
+                f"existing={existing_size}, expected={vector_size}. "
+                "Please migrate/recreate the collection before ingest."
+            )
+        if existing_distance != distance:
+            raise ValueError(
+                f"Qdrant collection {name!r} distance mismatch: "
+                f"existing={existing_distance}, expected={distance}. "
+                "Please migrate/recreate the collection before ingest."
+            )
+        logger.info(
+            "Qdrant: collection %r already exists — schema verified (dim=%s, distance=%s)",
+            name,
+            existing_size,
+            existing_distance,
+        )
         return
     client.create_collection(
         collection_name=name,

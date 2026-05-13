@@ -101,6 +101,29 @@ def _collection_name(cfg: dict) -> str:
     return (os.getenv("QDRANT_COLLECTION") or cfg.get("news_qdrant_collection") or "financial_news").strip()
 
 
+def _min_score_threshold(cfg: dict) -> float:
+    """Minimum score for keeping merged vector hits."""
+    raw = (os.getenv("NEWS_QDRANT_MIN_SCORE") or "").strip()
+    if not raw:
+        raw = str(cfg.get("news_qdrant_min_score", 0.0))
+    try:
+        v = float(raw)
+    except ValueError:
+        v = 0.0
+    return max(0.0, v)
+
+
+def _apply_min_score(hits: list[Any], *, min_score: float) -> list[Any]:
+    if min_score <= 0:
+        return hits
+    out: list[Any] = []
+    for h in hits:
+        sc = float(getattr(h, "score", 0.0) or 0.0)
+        if sc >= min_score:
+            out.append(h)
+    return out
+
+
 def _hit_to_channel(payload: dict[str, Any]) -> str:
     st = str(payload.get("source_type") or "").strip().lower()
     if st == "major_news":
@@ -223,7 +246,7 @@ def retrieve_merged_equity_raw_items(
     search_limit: int,
     per_route_limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    """④⑤：对每个主体一次 ``vector_search_one``，合并后拆成 major/flash 原始行（供 LLM 筛选）。"""
+    """④⑤：对每个主体一次 ``vector_search_one``，合并后按 major/flash 分桶取数（供 LLM 筛选）。"""
     cfg = get_config()
     pr = per_route_limit if per_route_limit is not None else int(cfg.get("news_qdrant_per_route_limit", 40))
     route_lim = max(10, min(200, int(pr)))
@@ -239,34 +262,52 @@ def retrieve_merged_equity_raw_items(
             limit=route_lim,
         )
         groups.append(hits)
-    merge_cap = max(int(search_limit), cap_major + cap_flash + 24)
-    merged_hits = multi_search_merge(groups, top_n=merge_cap)
+    # Keep all merged hits first, then apply score threshold + per-channel buckets.
+    # This avoids short-news-heavy top-N from squeezing out major_news recall.
+    merged_all = multi_search_merge(groups, top_n=None)
+    min_score = _min_score_threshold(cfg)
+    merged_hits = _apply_min_score(merged_all, min_score=min_score)
 
-    raw_major: list[dict[str, Any]] = []
-    raw_flash: list[dict[str, Any]] = []
+    major_hits: list[Any] = []
+    flash_hits: list[Any] = []
     for h in merged_hits:
         pl = h.payload or {}
         if not isinstance(pl, dict):
             continue
         ch = _hit_to_channel(pl)
+        if ch == "major_news":
+            major_hits.append(h)
+        else:
+            flash_hits.append(h)
+
+    raw_major: list[dict[str, Any]] = []
+    raw_flash: list[dict[str, Any]] = []
+    for h in major_hits[:cap_major]:
+        pl = h.payload or {}
+        if not isinstance(pl, dict):
+            continue
         item = _hit_to_raw_item(
             h.id,
             pl,
-            content_max=content_major_max if ch == "major_news" else content_flash_max,
+            content_max=content_major_max,
         )
-        if ch == "major_news":
-            if len(raw_major) < cap_major:
-                raw_major.append(item)
-        else:
-            if len(raw_flash) < cap_flash:
-                raw_flash.append(item)
-        if len(raw_major) >= cap_major and len(raw_flash) >= cap_flash:
-            break
+        raw_major.append(item)
+    for h in flash_hits[:cap_flash]:
+        pl = h.payload or {}
+        if not isinstance(pl, dict):
+            continue
+        item = _hit_to_raw_item(
+            h.id,
+            pl,
+            content_max=content_flash_max,
+        )
+        raw_flash.append(item)
     out = raw_major + raw_flash
     logger.info(
-        "Qdrant ④⑤ equity merged: routes=%s hits_merged=%s kept_major=%s kept_flash=%s collection=%r",
+        "Qdrant ④⑤ equity merged: routes=%s hits_merged=%s min_score=%.3f kept_major=%s kept_flash=%s collection=%r",
         len(entities),
         len(merged_hits),
+        min_score,
         len(raw_major),
         len(raw_flash),
         _collection_name(cfg),
@@ -276,6 +317,7 @@ def retrieve_merged_equity_raw_items(
             "kind": "equity_45",
             "routes": len(entities),
             "hits_merged": len(merged_hits),
+            "min_score": min_score,
             "kept_major": len(raw_major),
             "kept_flash": len(raw_flash),
             "collection": _collection_name(cfg),
@@ -350,12 +392,14 @@ def retrieve_markdown_loose(
     match_fn: Callable[[str, str], bool],
 ) -> tuple[list[str], list[str]]:
     """无 A 股代码时的单 query 检索 + ``match_fn``。"""
+    cfg = get_config()
     hits = vector_search_one(
         query_text=query_text,
         win_start=win_start,
         win_end=win_end,
         limit=search_limit,
     )
+    hits = _apply_min_score(hits, min_score=_min_score_threshold(cfg))
     major_lines: list[str] = []
     flash_lines: list[str] = []
     for h in hits:
@@ -419,6 +463,8 @@ def retrieve_macro_section_markdown(
     ]
     merge_cap = max(per_major + per_flash + 20, int(search_limit))
     hits = multi_search_merge(groups, top_n=merge_cap)
+    min_score = _min_score_threshold(cfg)
+    hits = _apply_min_score(hits, min_score=min_score)
     # If multi-route chunk queries are too sparse, run one broad fallback query
     # and merge it in to improve macro recall under volatile news distributions.
     min_expected = max(6, (per_major + per_flash) // 3)
@@ -433,6 +479,7 @@ def retrieve_macro_section_markdown(
                 limit=max(route_lim, min(220, route_lim + 40)),
             )
             hits = multi_search_merge([hits, fb], top_n=max(merge_cap, len(hits) + len(fb)))
+            hits = _apply_min_score(hits, min_score=min_score)
             logger.info(
                 "Qdrant ⑧ macro fallback query applied: previous_hits=%s fallback_hits=%s merged=%s",
                 prev_hits,
@@ -462,9 +509,10 @@ def retrieve_macro_section_markdown(
         if len(major_lines) >= per_major and len(flash_lines) >= per_flash:
             break
     logger.info(
-        "Qdrant ⑧ macro section: queries=%s hits_merged=%s kept_major=%s kept_flash=%s collection=%r",
+        "Qdrant ⑧ macro section: queries=%s hits_merged=%s min_score=%.3f kept_major=%s kept_flash=%s collection=%r",
         len(queries),
         len(hits),
+        min_score,
         len(major_lines),
         len(flash_lines),
         _collection_name(cfg),
@@ -474,6 +522,7 @@ def retrieve_macro_section_markdown(
             "kind": "macro_8",
             "queries": len(queries),
             "hits_merged": len(hits),
+            "min_score": min_score,
             "kept_major": len(major_lines),
             "kept_flash": len(flash_lines),
             "collection": _collection_name(cfg),
@@ -503,6 +552,8 @@ def retrieve_global_markdown(
         for q in queries
     ]
     hits = multi_search_merge(groups, top_n=search_lim)
+    min_score = _min_score_threshold(cfg)
+    hits = _apply_min_score(hits, min_score=min_score)
     major_lines: list[str] = []
     flash_lines: list[str] = []
     cm = 2200
@@ -538,6 +589,7 @@ def retrieve_global_markdown(
             "kind": "global_45",
             "queries": len(queries),
             "hits_merged": len(hits),
+            "min_score": min_score,
             "kept_major": len(major_lines),
             "kept_flash": len(flash_lines),
             "collection": _collection_name(cfg),
