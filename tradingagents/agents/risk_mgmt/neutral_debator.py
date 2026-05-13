@@ -37,7 +37,7 @@ Engage actively by analyzing both sides critically, addressing weaknesses in the
             prompt += """
 
 Moderate news-timeliness rule:
-- In this round, explicitly evaluate recency for major news context and reference 1-3 highest-impact items (prefer within ~30 days).
+- In this round, explicitly evaluate recency for major news context and reference 3-5 highest-impact items (prefer within ~30 days).
 - Use news as context rather than the whole thesis; if news is stale or conflicts with fresher market/fundamental evidence, explicitly down-weight it.
 - Data-first rule:
 - Prefer news/report points that provide quantifiable evidence (number + date + metric definition), and use those to arbitrate aggressive vs conservative claims.

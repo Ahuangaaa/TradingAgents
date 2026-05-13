@@ -53,7 +53,7 @@ Commit to a clear stance whenever the debate's strongest arguments warrant one; 
 
 Moderate news-timeliness calibration:
 - Explicitly include one concise news-timeliness judgment in your plan (which news remains valid now, which is stale).
-- Prefer 1-3 highest-impact recent news points (within ~30 days); if key news evidence is stale/weak, down-weight it and prioritize stronger market/fundamental signals.
+- Prefer 3-5 highest-impact recent news points (within ~30 days); if key news evidence is stale/weak, down-weight it and prioritize stronger market/fundamental signals.
 - Data-first calibration:
 - When using news/report evidence in your plan, prioritize quantified facts (number + date + metric definition) over narrative statements.
 - If key news/report claims are not supported by measurable data, explicitly mark them as low-confidence and avoid making them thesis-critical.

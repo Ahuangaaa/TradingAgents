@@ -69,7 +69,7 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
             prompt += """
 
 Moderate news-timeliness calibration:
-- In the final synthesis, include one concise timeliness judgment for news evidence and keep it focused on 1-3 highest-impact recent points.
+- In the final synthesis, include one concise timeliness judgment for news evidence and keep it focused on 3-5 highest-impact recent points.
 - If major news signals are stale/ambiguous versus fresher market/fundamental evidence, explicitly down-weight those news signals in the final thesis.
 - Data-first calibration:
 - In your final thesis, prioritize news/report evidence with concrete metrics (number + date + metric definition), and keep narrative-only headlines as supporting context.
