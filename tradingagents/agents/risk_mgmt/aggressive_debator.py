@@ -39,6 +39,9 @@ Engage actively by addressing any specific concerns raised, refuting the weaknes
 Moderate news-timeliness rule:
 - In this round, explicitly evaluate recency for the main news catalysts and reference 1-3 highest-impact items (prefer within ~30 days).
 - If any cited news is old/unclear, explicitly mark it as down-weighted and let market/fundamental evidence dominate.
+- Data-first rule:
+- For each major news/report catalyst you cite, include at least one concrete metric (number + date + what it measures), such as growth rate, margin, capex, order size, valuation multiple, or market-size forecast.
+- If a cited catalyst has no measurable data support, explicitly treat it as low-confidence/low-weight.
 """
 
             response = llm.invoke(prompt)

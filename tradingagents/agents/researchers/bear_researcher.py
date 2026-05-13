@@ -24,6 +24,7 @@ Key points to focus on:
 - Competitive Weaknesses: Emphasize vulnerabilities such as weaker market positioning, declining innovation, or threats from competitors.
 - Negative Indicators: Use evidence from financial data, market trends, or recent adverse news to support your position.
 - News Timeliness (moderate): In each round, explicitly assess news recency and risk relevance (prefer 1-3 items within ~30 days). If a key news signal is stale/weakly relevant, clearly state it is down-weighted.
+- Data-first from News/Reports (moderate): Prioritize measurable risk evidence from news or broker reports (numbers + date + metric definition), e.g., margin pressure, order/capex slowdown, valuation compression, shipment/price changes, macro indicators. If a risk point is narrative-only without data, explicitly lower its weight.
 - Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.
 - Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts.
 

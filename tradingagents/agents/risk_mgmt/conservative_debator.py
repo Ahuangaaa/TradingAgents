@@ -39,6 +39,9 @@ Engage by questioning their optimism and emphasizing the potential downsides the
 Moderate news-timeliness rule:
 - In this round, explicitly evaluate recency for the main news risks and reference 1-3 highest-impact items (prefer within ~30 days).
 - Avoid over-warning from stale headlines; if news is old/unclear, explicitly down-weight it and rely more on market/fundamental risk evidence.
+- Data-first rule:
+- For each major news/report risk you cite, include at least one concrete metric (number + date + what it measures), such as earnings miss, margin compression, capex/order slowdown, valuation drawdown, or macro indicator change.
+- If a risk claim lacks measurable data support, explicitly treat it as low-confidence/low-weight.
 """
 
             response = llm.invoke(prompt)
