@@ -13,7 +13,6 @@ import json
 from typing import Annotated
 
 import pandas as pd
-import requests
 from dateutil.relativedelta import relativedelta
 from stockstats import wrap
 
@@ -331,10 +330,11 @@ def _research_report_lines(
     """券商研报 ``research_report``；个股 + 可选行业（``ind_name`` 与库内一致时才有命中）。"""
     cfg = get_config()
     use_pdf = bool(cfg.get("news_research_pdf_extract_enabled", True))
-    pdf_timeout = float(cfg.get("news_research_pdf_timeout_sec", 20))
     pdf_max_bytes = int(cfg.get("news_research_pdf_max_bytes", 15_000_000))
     pdf_text_max_chars = int(cfg.get("news_research_pdf_text_max_chars", 24_000))
     pdf_page_limit = int(cfg.get("news_research_pdf_page_limit", 80))
+    pdf_playwright_timeout = float(cfg.get("news_research_pdf_playwright_timeout_sec", 40))
+    pdf_playwright_channel = str(cfg.get("news_research_pdf_playwright_channel", "msedge") or "msedge").strip()
     out: list[str] = []
     seen: set[str] = set()
 
@@ -379,15 +379,60 @@ def _research_report_lines(
             prefix = f"{trade_date}_{key}"
             pdf_path = pdf_dir / f"{prefix}.pdf"
             txt_path = txt_dir / f"{prefix}.txt"
-            if pdf_bytes and not pdf_path.exists():
-                pdf_path.write_bytes(pdf_bytes)
+
+            # Persist only real PDF bytes; never keep HTML/script anti-bot pages as *.pdf.
+            if pdf_bytes:
+                incoming_is_pdf = bool(pdf_bytes.startswith(b"%PDF-"))
+                existing_is_pdf = False
+                if pdf_path.exists():
+                    try:
+                        with open(pdf_path, "rb") as f:
+                            existing_is_pdf = f.read(5) == b"%PDF-"
+                    except Exception:
+                        existing_is_pdf = False
+                if incoming_is_pdf:
+                    # Overwrite existing invalid/old file with verified PDF bytes.
+                    pdf_path.write_bytes(pdf_bytes)
+                elif pdf_path.exists() and not existing_is_pdf:
+                    # Remove stale invalid artifact so users don't open a broken file.
+                    pdf_path.unlink(missing_ok=True)
+
             if text and not txt_path.exists():
                 txt_path.write_text(text, encoding="utf-8")
-            return str(pdf_path), str(txt_path)
+            pdf_saved = ""
+            if pdf_path.exists():
+                try:
+                    with open(pdf_path, "rb") as f:
+                        if f.read(5) == b"%PDF-":
+                            pdf_saved = str(pdf_path)
+                except Exception:
+                    pdf_saved = ""
+            txt_saved = str(txt_path) if txt_path.exists() else ""
+            return pdf_saved, txt_saved
         except Exception:
             return "", ""
 
     def _extract_pdf_text(url: str, *, trade_date: str, report_type: str, title: str) -> str:
+        def _looks_like_pdf_bytes(data: bytes) -> bool:
+            return bool(data and data.startswith(b"%PDF-"))
+
+        def _download_with_playwright(target_url: str) -> tuple[bytes, str]:
+            p = importlib.import_module("playwright.sync_api")
+            sync_playwright = getattr(p, "sync_playwright")
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(headless=True, channel=pdf_playwright_channel)
+                try:
+                    ctx = browser.new_context()
+                    try:
+                        resp = ctx.request.get(target_url, timeout=int(pdf_playwright_timeout * 1000))
+                        if not resp.ok:
+                            raise RuntimeError(f"playwright_request_status_{resp.status}")
+                        return (resp.body() or b""), "playwright_context_request"
+                    finally:
+                        ctx.close()
+                finally:
+                    browser.close()
+
         u = str(url or "").strip()
         if not use_pdf or not u:
             return ""
@@ -403,6 +448,7 @@ def _research_report_lines(
                     "from_cache": True,
                     "download_ok": bool(cached.get("download_ok", False)),
                     "parse_ok": bool(cached.get("parse_ok", False)),
+                    "download_method": str(cached.get("download_method", "") or ""),
                     "download_bytes": int(cached.get("download_bytes", 0) or 0),
                     "text_chars": len(str(cached.get("text", "") or "")),
                     "pdf_path": str(cached.get("pdf_path", "") or ""),
@@ -412,19 +458,14 @@ def _research_report_lines(
             )
             return str(cached.get("text", "") or "")
         try:
-            resp = requests.get(
-                u,
-                timeout=pdf_timeout,
-                headers={"User-Agent": "TradingAgents/1.0 (+research-report-pdf)"},
-            )
-            resp.raise_for_status()
-            content = resp.content or b""
+            content, method = _download_with_playwright(u)
         except Exception as exc:  # noqa: BLE001
             logger.warning("⑦ 研报PDF下载失败 url=%s err=%s", u, exc)
             _RUN_RESEARCH_PDF_CACHE[u] = {
                 "text": "",
                 "download_ok": False,
                 "parse_ok": False,
+                "download_method": "",
                 "download_bytes": 0,
                 "pdf_path": "",
                 "text_path": "",
@@ -440,6 +481,7 @@ def _research_report_lines(
                     "from_cache": False,
                     "download_ok": False,
                     "parse_ok": False,
+                    "download_method": "",
                     "download_bytes": 0,
                     "text_chars": 0,
                     "pdf_path": "",
@@ -453,6 +495,7 @@ def _research_report_lines(
                 "text": "",
                 "download_ok": False,
                 "parse_ok": False,
+                "download_method": "",
                 "download_bytes": 0,
                 "pdf_path": "",
                 "text_path": "",
@@ -468,11 +511,51 @@ def _research_report_lines(
                     "from_cache": False,
                     "download_ok": False,
                     "parse_ok": False,
+                    "download_method": "",
                     "download_bytes": 0,
                     "text_chars": 0,
                     "pdf_path": "",
                     "text_path": "",
                     "error": "empty_content",
+                }
+            )
+            return ""
+        if not _looks_like_pdf_bytes(content):
+            err = "not_pdf_content"
+            pdf_path, _ = _save_pdf_artifacts(
+                url=u,
+                trade_date=trade_date,
+                report_type=report_type,
+                title=title,
+                pdf_bytes=content,
+                text="",
+            )
+            _RUN_RESEARCH_PDF_CACHE[u] = {
+                "text": "",
+                "download_ok": True,
+                "parse_ok": False,
+                "download_method": method,
+                "download_bytes": len(content),
+                "pdf_path": pdf_path,
+                "text_path": "",
+                "error": err,
+            }
+            _append_pdf_diag_row(
+                {
+                    "kind": "research_pdf_extract",
+                    "url": u,
+                    "trade_date": trade_date,
+                    "report_type": report_type,
+                    "title": title,
+                    "from_cache": False,
+                    "download_ok": True,
+                    "parse_ok": False,
+                    "download_method": method,
+                    "download_bytes": len(content),
+                    "text_chars": 0,
+                    "pdf_path": pdf_path,
+                    "text_path": "",
+                    "error": err,
                 }
             )
             return ""
@@ -495,6 +578,7 @@ def _research_report_lines(
                 "text": "",
                 "download_ok": True,
                 "parse_ok": False,
+                "download_method": method,
                 "download_bytes": len(content),
                 "pdf_path": pdf_path,
                 "text_path": "",
@@ -510,6 +594,7 @@ def _research_report_lines(
                     "from_cache": False,
                     "download_ok": True,
                     "parse_ok": False,
+                    "download_method": method,
                     "download_bytes": len(content),
                     "text_chars": 0,
                     "pdf_path": pdf_path,
@@ -547,6 +632,7 @@ def _research_report_lines(
                 "text": txt,
                 "download_ok": True,
                 "parse_ok": True,
+                "download_method": method,
                 "download_bytes": len(content),
                 "pdf_path": pdf_path,
                 "text_path": txt_path,
@@ -562,6 +648,7 @@ def _research_report_lines(
                     "from_cache": False,
                     "download_ok": True,
                     "parse_ok": True,
+                    "download_method": method,
                     "download_bytes": len(content),
                     "text_chars": len(txt),
                     "pdf_path": pdf_path,
@@ -584,6 +671,7 @@ def _research_report_lines(
                 "text": "",
                 "download_ok": True,
                 "parse_ok": False,
+                "download_method": method,
                 "download_bytes": len(content),
                 "pdf_path": pdf_path,
                 "text_path": "",
@@ -599,6 +687,7 @@ def _research_report_lines(
                     "from_cache": False,
                     "download_ok": True,
                     "parse_ok": False,
+                    "download_method": method,
                     "download_bytes": len(content),
                     "text_chars": 0,
                     "pdf_path": pdf_path,
@@ -719,9 +808,11 @@ def _refine_research_report_lines_with_llm(
 
 重点（必须优先）：
 1) 关键预期：机构对未来1-4个季度/1-2年的核心判断（需求、价格、份额、产品放量、订单、政策、产能、出海等）
-2) 大概率将发生的事件：时间点、触发条件、验证路径（如新品发布、产能投放、招投标、价格拐点、监管落地）
-3) 风险点：导致预期落空的主要风险、发生条件、可能后果
-4) 产品与竞争：产品特性、护城河（技术/渠道/品牌/成本/生态/资质等）、相对竞品的比较优势或劣势
+2) 关键数据：优先提取明确数字与变化方向（同比/环比、上修/下修、区间/目标值），包括财务数据、行业数据、宏观数据
+3) 大概率将发生的事件：时间点、触发条件、验证路径（如新品发布、产能投放、招投标、价格拐点、监管落地）
+4) 风险点：导致预期落空的主要风险、发生条件、可能后果
+5) 产品与竞争：产品特性、护城河（技术/渠道/品牌/成本/生态/资质等）、相对竞品的比较优势或劣势
+6) 财务与技术面：若原文有高价值信息可保留（如盈利预测、估值口径、量价结构、关键技术位/成交特征），但只保留结论性信息
 
 时效性规则（必须执行）：
 1) 明确标注研报发布日期（trade_date/pub_time）；无日期时标注“日期缺失”并降置信度。
@@ -729,14 +820,15 @@ def _refine_research_report_lines_with_llm(
 3) 近期（近30-60天）信息优先于更早信息；较旧信息仅在解释趋势延续时保留。
 4) 输出结论必须带时间锚点（如“截至2026-05-12”“Q3前后”），避免无时点判断。
 
-明确不要：
-- 不做财务面总结（收入/利润/估值/目标价/评级变动等仅在直接支撑“预期或风险”时一句带过）。
-- 不做技术面总结（K线、均线、形态、成交量、技术指标等）。
+表达约束（去废话）：
+- 不要空话、套话、重复描述，不要长段背景复述。
+- 不要泛泛而谈“持续看好/长期向好”而不给数据或触发条件。
+- 每条结论尽量配“日期 + 数据/事实依据”。
 
 要求：
 - 只依据输入，不编造信息。
 - 尽量保留时间、机构名、关键条件与方向（上调/下调、改善/恶化）。
-- 优先输出“结论+依据”，避免流水账复述。
+- 优先输出“结论+关键数据+依据”，避免流水账复述。
 - 不要输出代码围栏。
 - 输出 <= {per_item_cap} 字符。"""
     item_results: list[str] = []
@@ -769,8 +861,9 @@ def _refine_research_report_lines_with_llm(
 必须突出：
 1) 跨研报一致的核心预期（以及分歧点）
 2) 未来大概率事件的时间线、触发条件、先行验证信号
-3) 主要风险清单（触发条件+影响路径+优先级）
-4) 产品特性、护城河与相对竞争优势（含可能被削弱的因素）
+3) 关键数据汇总（财务/行业/宏观）与口径差异，尽量保留数字和方向
+4) 主要风险清单（触发条件+影响路径+优先级）
+5) 产品特性、护城河与相对竞争优势（含可能被削弱的因素）
 
 时效性规则（必须执行）：
 1) 先做按日期排序再归纳：新到旧。
@@ -778,9 +871,10 @@ def _refine_research_report_lines_with_llm(
 3) 输出需区分“近期已验证/正在验证/远期假设”三类，避免把历史结论当作当前结论。
 4) 每个关键结论都要保留日期锚点（至少到天或周）。
 
-明确不要：
-- 不单独展开财务面总结（收入/利润/估值/目标价/评级等）。
-- 不单独展开技术面总结（任何技术指标与走势形态）。
+表达约束（去废话）：
+- 不要堆砌形容词或重复同义结论。
+- 保留“有数据支撑的财务/技术面信息”，删掉无数字、无条件、无时点的表述。
+- 冲突观点用“旧观点 -> 新观点 -> 当前判断”三段式简写。
 
 只基于输入，不编造；不要代码围栏。"""
     for _ in range(3):

@@ -78,10 +78,12 @@ DEFAULT_CONFIG = {
     "news_research_llm_output_max_chars": 5000,
     # ⑦ 研报：下载 PDF 并提取正文（失败自动回退 abstr）
     "news_research_pdf_extract_enabled": True,
-    "news_research_pdf_timeout_sec": 20,
     "news_research_pdf_max_bytes": 15000000,
     "news_research_pdf_text_max_chars": 24000,
     "news_research_pdf_page_limit": 80,
+    # ⑦ 研报 PDF 下载：仅使用 Playwright 浏览器上下文请求（Edge channel）。
+    "news_research_pdf_playwright_timeout_sec": 40,
+    "news_research_pdf_playwright_channel": "msedge",
     "news_macro_vector_terms_per_query": 8,
     # ⑧ 宏观向量专题（专用检索词 + 可选 LLM；与 ④⑤ query 分离）
     "news_macro_section8_enabled": True,
