@@ -1715,16 +1715,16 @@ def get_tushare_holder_number(ticker: str, start_date: str, end_date: str) -> st
 
 
 def get_tushare_stock_moneyflow(ticker: str, start_date: str, end_date: str) -> str:
-    """Per-stock money flow — large / extra-large orders via ``moneyflow``."""
+    """Per-stock money flow via THS endpoint ``moneyflow_ths``."""
     ts_code = resolve_tushare_equity(ticker)
     if not ts_code:
         return f"No moneyflow data: unknown symbol '{ticker}'."
     d0, d1 = to_yyyymmdd(start_date), to_yyyymmdd(end_date)
-    df = _try_pro_call("moneyflow", ts_code=ts_code, start_date=d0, end_date=d1)
+    df = _try_pro_call("moneyflow_ths", ts_code=ts_code, start_date=d0, end_date=d1)
     if df is None or df.empty:
         return (
-            f"No moneyflow data for '{ticker}' (Tushare moneyflow; requires ~2000+积分). "
-            "See https://tushare.pro/wctapi/documents/170.md"
+            f"No moneyflow data for '{ticker}' (Tushare moneyflow_ths; requires ~6000+积分). "
+            "See https://tushare.pro/wctapi/documents/348.md"
         )
     if "trade_date" in df.columns:
         df = df.sort_values("trade_date", ascending=False, ignore_index=True)
@@ -1732,7 +1732,7 @@ def get_tushare_stock_moneyflow(ticker: str, start_date: str, end_date: str) -> 
     if len(body) > 200_000:
         body = body[:200_000] + "\n…（输出已截断）"
     return _df_to_csv_header(
-        "Stock moneyflow: small/medium/large/extra-large (moneyflow)",
+        "Stock moneyflow (THS): net_amount / net_d5_amount / buy_lg_md_sm_amount_rate (moneyflow_ths)",
         ts_code,
         body,
     )

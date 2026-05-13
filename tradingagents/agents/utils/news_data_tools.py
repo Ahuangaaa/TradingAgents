@@ -91,14 +91,16 @@ def get_holder_number(
 @tool
 def get_stock_moneyflow(
     ticker: Annotated[str, "Ticker symbol"],
-    start_date: Annotated[str, "First trade date (yyyy-mm-dd)"],
-    end_date: Annotated[str, "Last trade date (yyyy-mm-dd)"],
+    start_date: Annotated[str, "First trade date (YYYYMMDD; yyyy-mm-dd also accepted)"],
+    end_date: Annotated[str, "Last trade date (YYYYMMDD; yyyy-mm-dd also accepted)"],
 ) -> str:
     """
-    Daily A-share money flow with large/extra-large order breakdown (Tushare ``moneyflow``).
-    Use net_mf_amount, buy_lg/buy_elg vs sell for **大资金** flow interpretation.
+    Daily THS per-stock money flow (Tushare ``moneyflow_ths``), updated after market close.
+    Use `net_amount` (当日资金净流入), `net_d5_amount` (5日主力净额), and
+    `buy_lg_amount` / `buy_md_amount` / `buy_sm_amount` with their `_rate` fields to interpret
+    大单/中单/小单结构 and flow persistence.
 
-    Requires sufficient Tushare积分 (~2000+). Docs: https://tushare.pro/wctapi/documents/170.md
+    Requires sufficient Tushare积分 (~6000+). Docs: https://tushare.pro/wctapi/documents/348.md
     """
     return route_to_vendor("get_stock_moneyflow", ticker, start_date, end_date)
 
