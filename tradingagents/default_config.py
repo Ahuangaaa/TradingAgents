@@ -71,7 +71,8 @@ DEFAULT_CONFIG = {
     "news_qdrant_search_limit": 200,
     "news_qdrant_per_route_limit": 40,
     # Minimum similarity score for Qdrant merged hits (0 disables threshold).
-    "news_qdrant_min_score": 0.15,
+    # Raised from 0.15 to reduce low-relevance flash noise while preserving recall.
+    "news_qdrant_min_score": 0.18,
     # ⑦ 研报：LLM 精简（个股+行业）输出长度硬上限
     "news_research_llm_refine": True,
     "news_research_llm_input_max_chars": 30000,

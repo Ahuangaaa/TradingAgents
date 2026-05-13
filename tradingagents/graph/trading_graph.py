@@ -193,6 +193,7 @@ class TradingAgentsGraph:
                 [
                     get_industry_peers,
                     get_news,
+                    get_global_news,
                     get_holder_number,
                     get_stock_moneyflow,
                     get_margin_detail,

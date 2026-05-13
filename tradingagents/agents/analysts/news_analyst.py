@@ -41,6 +41,7 @@ def create_news_analyst(llm):
                 + " A downstream step will consolidate findings into a structured deep fundamental checklist—surface concrete facts and dates so they can be cited there."
                 + " **Timeliness (mandatory):** Treat recency as a first-class signal. Organize evidence in a clear timeline (new -> old), mark each key claim with date/source, and when newer information conflicts with older narratives, explicitly state the update and prioritize the latest verified evidence."
                 + " In the final report, separate short-term signals (next 1-4 weeks), near-term events (1-3 months), and medium-term hypotheses (3-12 months)."
+                + " **Citation block (mandatory):** Add a dedicated section named `## 引用来源` at the end. Include every material source you actually used from news/research reports/上证e互动/深交所互动易（深圳e互动） as a Markdown table with columns: `来源类别 | 日期 | 标题 | 证券/主题 | URL或渠道`. In `来源类别`, explicitly label one of: `新闻` / `研报` / `上证e互动` / `深交所互动易`. Do not fabricate links; if no URL is available, write `Tushare-<接口名>` as the channel."
                 + ticker_guard
                 + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
                 + get_web_fetch_tool_hint()

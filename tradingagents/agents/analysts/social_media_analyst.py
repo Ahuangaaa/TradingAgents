@@ -49,6 +49,7 @@ def create_social_media_analyst(llm):
                 + "(2) Call `get_stock_moneyflow` for recent trading days (e.g. last ~30–60 sessions ending on the analysis date) and interpret **大单/特大单** activity and **net_mf_amount** (large-capital flow). "
                 + "(3) Call `get_margin_detail` over the same recent trading window and describe **融资融券** trends: 融资余额 `rzye`, 融资买入 `rzmre`, 融资偿还 `rzche`, etc. "
                 + "Include a dedicated markdown section summarizing these three pillars before your closing table."
+                + " **Citation block (mandatory):** Add a dedicated section named `## 引用来源` at the end. Include every material source you actually used from news/research reports/上证e互动/深交所互动易（深圳e互动） as a Markdown table with columns: `来源类别 | 日期 | 标题 | 证券/主题 | URL或渠道`. In `来源类别`, explicitly label one of: `新闻` / `研报` / `上证e互动` / `深交所互动易`. Do not fabricate links; if no URL is available, write `Tushare-<接口名>` as the channel."
                 + ticker_guard
                 + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
                 + get_web_fetch_tool_hint()
