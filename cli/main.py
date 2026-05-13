@@ -24,6 +24,8 @@ from rich.tree import Tree
 from rich import box
 from rich.align import Align
 from rich.rule import Rule
+import importlib
+import html
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
@@ -722,8 +724,71 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
 
     # Write consolidated report
     header = f"# Trading Analysis Report: {ticker}\n\nGenerated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-    (save_path / "complete_report.md").write_text(header + "\n\n".join(sections), encoding="utf-8")
-    return save_path / "complete_report.md"
+    md_path = save_path / "complete_report.md"
+    md_path.write_text(header + "\n\n".join(sections), encoding="utf-8")
+    _save_markdown_as_pdf(md_path, save_path / "complete_report.pdf")
+    return md_path
+
+
+def _render_markdown_html(markdown_text: str, title: str) -> str:
+    """Render markdown into styled HTML for PDF export."""
+    try:
+        md_mod = importlib.import_module("markdown_it")
+        md = md_mod.MarkdownIt("commonmark", {"html": False, "linkify": True, "typographer": False}).enable("table")
+        body = md.render(markdown_text)
+    except Exception:
+        # Fallback: keep export available even when markdown parser is missing.
+        body = f"<pre>{html.escape(markdown_text)}</pre>"
+
+    css = """
+    body { font-family: 'Segoe UI', 'Microsoft YaHei', Arial, sans-serif; color: #1f2937; margin: 24px; line-height: 1.6; }
+    h1, h2, h3, h4 { color: #0f172a; margin-top: 20px; margin-bottom: 10px; }
+    h1 { font-size: 24px; border-bottom: 1px solid #d1d5db; padding-bottom: 8px; }
+    h2 { font-size: 20px; border-left: 4px solid #2563eb; padding-left: 8px; }
+    h3 { font-size: 16px; }
+    p, li { font-size: 12px; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0 16px; font-size: 11px; }
+    th, td { border: 1px solid #d1d5db; padding: 6px 8px; text-align: left; vertical-align: top; }
+    th { background: #f3f4f6; font-weight: 600; }
+    code { font-family: 'Consolas', 'Courier New', monospace; background: #f3f4f6; padding: 1px 3px; border-radius: 3px; font-size: 11px; }
+    pre { background: #0b1220; color: #e5e7eb; padding: 10px; border-radius: 6px; overflow-x: auto; }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote { border-left: 3px solid #94a3b8; margin: 8px 0; padding-left: 10px; color: #475569; }
+    """
+    safe_title = html.escape(title)
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        f"<title>{safe_title}</title><style>{css}</style></head><body>{body}</body></html>"
+    )
+
+
+def _save_markdown_as_pdf(md_path: Path, pdf_path: Path) -> None:
+    """Best-effort markdown -> PDF export using Playwright (Edge channel)."""
+    try:
+        playwright_mod = importlib.import_module("playwright.sync_api")
+        sync_playwright = getattr(playwright_mod, "sync_playwright")
+    except Exception as exc:
+        console.print(f"[yellow]! PDF export skipped (playwright unavailable): {exc}[/yellow]")
+        return
+
+    try:
+        content = md_path.read_text(encoding="utf-8")
+        html_doc = _render_markdown_html(content, title=md_path.stem)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, channel="msedge")
+            try:
+                page = browser.new_page()
+                page.set_content(html_doc, wait_until="load")
+                page.pdf(
+                    path=str(pdf_path),
+                    format="A4",
+                    print_background=True,
+                    margin={"top": "14mm", "right": "12mm", "bottom": "14mm", "left": "12mm"},
+                )
+            finally:
+                browser.close()
+    except Exception as exc:
+        console.print(f"[yellow]! PDF export failed for {md_path.name}: {exc}[/yellow]")
 
 
 def display_complete_report(final_state):
