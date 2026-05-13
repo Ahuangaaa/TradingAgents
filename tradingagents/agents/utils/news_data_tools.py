@@ -82,7 +82,7 @@ def get_holder_number(
     """
     Shareholder count (户数) from Tushare ``stk_holdernumber`` (by ann_date).
 
-    **When analyzing output:** treat **sustained or sharp increases** in holder_num as **high-weight risk**—often read as **筹码分散** and, especially after a rally or at elevated prices, as **consistent with possible 主力出货** (distribution). Do not bury this below positive flow or margin data; surface it prominently in risk sections.
+    **When analyzing output:** use a combined rule for holder-count risk weighting. If the latest holder-count change is **highly recent** (e.g. latest disclosure within ~2 months) and the report-period series has **large average fluctuation** or **strong one-direction move** (especially sustained increase), treat it as **high-weight risk**. This is often read as **筹码分散** and, especially after a rally or at elevated prices, as **consistent with possible 主力出货** (distribution). If average fluctuation is small or disclosures are stale/far from the analysis date, do not over-weight this signal alone. Always present the final risk tier clearly and cross-check with moneyflow/margin context.
     Docs: https://tushare.pro/wctapi/documents/166.md
     """
     return route_to_vendor("get_holder_number", ticker, start_date, end_date)
