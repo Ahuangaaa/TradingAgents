@@ -34,6 +34,12 @@ Deep fundamental checklist: {deep_checklist}
 Here is the current conversation history: {history} Here are the last arguments from the conservative analyst: {current_conservative_response} Here are the last arguments from the neutral analyst: {current_neutral_response}. If there are no responses from the other viewpoints yet, present your own argument based on the available data.
 
 Engage actively by addressing any specific concerns raised, refuting the weaknesses in their logic, and asserting the benefits of risk-taking to outpace market norms. Maintain a focus on debating and persuading, not just presenting data. Challenge each counterpoint to underscore why a high-risk approach is optimal. Output conversationally as if you are speaking without any special formatting.{get_language_instruction()}"""
+            prompt += """
+
+Moderate news-timeliness rule:
+- In this round, explicitly evaluate recency for the main news catalysts and reference 1-3 highest-impact items (prefer within ~30 days).
+- If any cited news is old/unclear, explicitly mark it as down-weighted and let market/fundamental evidence dominate.
+"""
 
             response = llm.invoke(prompt)
 

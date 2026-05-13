@@ -49,6 +49,12 @@ Commit to a clear stance whenever the debate's strongest arguments warrant one; 
 
 **Debate History:**
 {history}{get_language_instruction()}"""
+            prompt += """
+
+Moderate news-timeliness calibration:
+- Explicitly include one concise news-timeliness judgment in your plan (which news remains valid now, which is stale).
+- Prefer 1-3 highest-impact recent news points (within ~30 days); if key news evidence is stale/weak, down-weight it and prioritize stronger market/fundamental signals.
+"""
 
             investment_plan = invoke_structured_or_freetext(
                 structured_llm,

@@ -66,6 +66,12 @@ def create_portfolio_manager(llm):
 ---
 
 Be decisive and ground every conclusion in specific evidence from the analysts.{get_language_instruction()}"""
+            prompt += """
+
+Moderate news-timeliness calibration:
+- In the final synthesis, include one concise timeliness judgment for news evidence and keep it focused on 1-3 highest-impact recent points.
+- If major news signals are stale/ambiguous versus fresher market/fundamental evidence, explicitly down-weight those news signals in the final thesis.
+"""
 
             final_trade_decision = invoke_structured_or_freetext(
                 structured_llm,

@@ -34,6 +34,12 @@ Deep fundamental checklist: {deep_checklist}
 Here is the current conversation history: {history} Here is the last response from the aggressive analyst: {current_aggressive_response} Here is the last response from the neutral analyst: {current_neutral_response}. If there are no responses from the other viewpoints yet, present your own argument based on the available data.
 
 Engage by questioning their optimism and emphasizing the potential downsides they may have overlooked. Address each of their counterpoints to showcase why a conservative stance is ultimately the safest path for the firm's assets. Focus on debating and critiquing their arguments to demonstrate the strength of a low-risk strategy over their approaches. Output conversationally as if you are speaking without any special formatting.{get_language_instruction()}"""
+            prompt += """
+
+Moderate news-timeliness rule:
+- In this round, explicitly evaluate recency for the main news risks and reference 1-3 highest-impact items (prefer within ~30 days).
+- Avoid over-warning from stale headlines; if news is old/unclear, explicitly down-weight it and rely more on market/fundamental risk evidence.
+"""
 
             response = llm.invoke(prompt)
 
