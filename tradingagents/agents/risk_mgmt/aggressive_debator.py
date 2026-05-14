@@ -42,6 +42,9 @@ Moderate news-timeliness rule:
 - Data-first rule:
 - For each major news/report catalyst you cite, include at least one concrete metric (number + date + what it measures), such as growth rate, margin, capex, order size, valuation multiple, or market-size forecast.
 - If a cited catalyst has no measurable data support, explicitly treat it as low-confidence/low-weight.
+- Balance rule (mandatory):
+- After extracting news catalysts, explicitly tie them to financial-fundamental confirmation (growth quality, profitability, cash flow/balance-sheet, valuation) and short-term technical confirmation (recent 5-20 trading day trend/momentum/volatility).
+- If news direction conflicts with fundamentals or short-term technicals, state the conflict and reduce confidence; do not make a high-conviction claim from news alone.
 """
 
             response = llm.invoke(prompt)

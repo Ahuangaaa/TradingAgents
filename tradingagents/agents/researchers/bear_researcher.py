@@ -25,6 +25,7 @@ Key points to focus on:
 - Negative Indicators: Use evidence from financial data, market trends, or recent adverse news to support your position.
 - News Timeliness (moderate): In each round, explicitly assess news recency and risk relevance (prefer 3-5 items within ~30 days). If a key news signal is stale/weakly relevant, clearly state it is down-weighted.
 - Data-first from News/Reports (moderate): Prioritize measurable risk evidence from news or broker reports (numbers + date + metric definition), e.g., margin pressure, order/capex slowdown, valuation compression, shipment/price changes, macro indicators. If a risk point is narrative-only without data, explicitly lower its weight.
+- Balance rule (mandatory): After extracting news risks, explicitly verify them against (a) financial fundamentals (earnings quality, leverage/cash flow resilience, valuation fragility) and (b) short-term technical context (recent 5-20 trading day trend/momentum/volatility). Do not base risk conclusions on news alone.
 - Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.
 - Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts.
 

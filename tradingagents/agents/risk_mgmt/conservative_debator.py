@@ -42,6 +42,9 @@ Moderate news-timeliness rule:
 - Data-first rule:
 - For each major news/report risk you cite, include at least one concrete metric (number + date + what it measures), such as earnings miss, margin compression, capex/order slowdown, valuation drawdown, or macro indicator change.
 - If a risk claim lacks measurable data support, explicitly treat it as low-confidence/low-weight.
+- Balance rule (mandatory):
+- After extracting news risks, explicitly anchor them in financial-fundamental risk checks (earnings quality, leverage/liquidity, valuation downside) and short-term technical risk checks (recent 5-20 trading day trend/momentum/volatility).
+- If news-based risk is not confirmed by either fundamentals or short-term technicals, lower its weight and avoid over-warning.
 """
 
             response = llm.invoke(prompt)

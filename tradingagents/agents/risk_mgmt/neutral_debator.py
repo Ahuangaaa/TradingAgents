@@ -42,6 +42,9 @@ Moderate news-timeliness rule:
 - Data-first rule:
 - Prefer news/report points that provide quantifiable evidence (number + date + metric definition), and use those to arbitrate aggressive vs conservative claims.
 - If both sides rely on narrative headlines without measurable data, explicitly reduce confidence and fall back to stronger market/fundamental data.
+- Balance rule (mandatory):
+- After extracting news data, explicitly run a two-lens balance check: financial fundamentals (profitability/growth quality/cash flow/valuation) and short-term technicals (recent 5-20 trading day trend/momentum/volatility).
+- Use this balance check to decide final weight; do not let news-only arguments dominate when fundamentals/technicals disagree.
 """
 
             response = llm.invoke(prompt)
