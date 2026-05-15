@@ -16,7 +16,8 @@ def get_indicators(
     Underlying OHLCV comes from Tushare ``daily``; indicator names follow the ``stockstats`` library
     (not a separate Tushare table). Official ``daily`` field definitions:
     https://tushare.pro/wctapi/documents/27.md
-    Use ``fetch_url`` on tushare.pro if you need to confirm raw column meanings before interpreting indicators.
+    Use ``fetch_url`` on tushare.pro to confirm raw column meanings before interpreting indicators;
+    when citing fields in conclusions, align field definition and unit with official docs explicitly.
 
     Args:
         symbol (str): Ticker symbol of the company, e.g. AAPL, TSM

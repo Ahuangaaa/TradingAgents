@@ -21,6 +21,8 @@ def get_news(
     irm_qa_sh — https://tushare.pro/wctapi/documents/366.md
     irm_qa_sz —  https://tushare.pro/wctapi/documents/367.md
     research_report —  https://tushare.pro/wctapi/documents/415.md
+    Interpretation rule: for fields used in conclusions, align each field's definition and unit with
+    the corresponding official doc section first (do not infer semantics from field names alone).
 
     Args:
         ticker (str): Ticker symbol
@@ -44,6 +46,7 @@ def get_global_news(
 
     Official Tushare API docs (use ``fetch_url`` on tushare.pro to align field meanings):
     For company/peer corpus (①②④⑤⑦), use ``get_news``.
+    Interpretation rule: if macro fields are used in conclusions, align field definition/unit with docs first.
 
     Args:
         curr_date (str): Current date in yyyy-mm-dd format
@@ -64,6 +67,7 @@ def get_insider_transactions(
 
     Official Tushare API docs (use ``fetch_url`` on tushare.pro to align column meanings):
     https://tushare.pro/wctapi/documents/175.md
+    Interpretation rule: align each cited column with official definition and unit before interpretation.
 
     Args:
         ticker (str): Ticker symbol of the company
@@ -84,6 +88,7 @@ def get_holder_number(
 
     **When analyzing output:** use a combined rule for holder-count risk weighting. If the latest holder-count change is **highly recent** (e.g. latest disclosure within ~2 months) and the report-period series has **large average fluctuation** or **strong one-direction move** (especially sustained increase), treat it as **high-weight risk**. This is often read as **筹码分散** and, especially after a rally or at elevated prices, as **consistent with possible 主力出货** (distribution). If average fluctuation is small or disclosures are stale/far from the analysis date, do not over-weight this signal alone. Always present the final risk tier clearly and cross-check with moneyflow/margin context.
     Docs: https://tushare.pro/wctapi/documents/166.md
+    Interpretation rule: align fields like ann_date/end_date/holder_num with official docs before drawing conclusions.
     """
     return route_to_vendor("get_holder_number", ticker, start_date, end_date)
 
@@ -101,6 +106,7 @@ def get_stock_moneyflow(
     大单/中单/小单结构 and flow persistence.
 
     Requires sufficient Tushare积分 (~6000+). Docs: https://tushare.pro/wctapi/documents/348.md
+    Interpretation rule: align all cited moneyflow_ths fields and units with official docs before analysis.
     """
     return route_to_vendor("get_stock_moneyflow", ticker, start_date, end_date)
 
@@ -116,5 +122,6 @@ def get_margin_detail(
     融资偿还 rzche, 融券余量 rqyl, etc. Describe **融资** balance and activity trends over the window.
 
     Docs: https://tushare.pro/wctapi/documents/59.md
+    Interpretation rule: align each cited margin field with official docs before interpretation.
     """
     return route_to_vendor("get_margin_detail", ticker, start_date, end_date)

@@ -10,11 +10,14 @@ def get_fundamentals(
 ) -> str:
     """
     Retrieve comprehensive fundamental data for a given ticker symbol.
-    Uses the configured fundamental_data vendor (Tushare ``stock_basic`` + ``fina_indicator``).
+    Uses the configured fundamental_data vendor (Tushare ``stock_basic`` + ``daily_basic`` + ``fina_indicator``).
 
     Official Tushare API docs (use ``fetch_url`` on tushare.pro to align field meanings):
     stock_basic — https://tushare.pro/wctapi/documents/25.md
+    daily_basic — https://tushare.pro/wctapi/documents/32.md
     fina_indicator — https://tushare.pro/wctapi/documents/79.md
+    Interpretation rule: do not quote key fields (especially valuation/market-cap fields) until you
+    align each cited field with the official doc definition and unit.
 
     Args:
         ticker (str): Ticker symbol of the company
@@ -41,6 +44,7 @@ def get_industry_peers(
     Call **before** deep `get_news` or `get_fundamentals` on competitors so tickers are explicit.
 
     Official docs: stock_basic — https://tushare.pro/wctapi/documents/25.md
+    Interpretation rule: if you cite any returned columns, align each field meaning with docs first.
     """
     return route_to_vendor("get_industry_peers", ticker, curr_date, max_peers)
 
@@ -57,6 +61,7 @@ def get_balance_sheet(
 
     Official Tushare API docs (use ``fetch_url`` on tushare.pro to align column meanings):
     https://tushare.pro/wctapi/documents/36.md
+    Interpretation rule: align each cited column with doc definition and unit before analysis.
 
     Args:
         ticker (str): Ticker symbol of the company
@@ -80,6 +85,7 @@ def get_cashflow(
 
     Official Tushare API docs (use ``fetch_url`` on tushare.pro to align column meanings):
     https://tushare.pro/wctapi/documents/44.md
+    Interpretation rule: align each cited column with doc definition and unit before analysis.
 
     Args:
         ticker (str): Ticker symbol of the company
@@ -103,6 +109,7 @@ def get_income_statement(
 
     Official Tushare API docs (use ``fetch_url`` on tushare.pro to align column meanings):
     https://tushare.pro/wctapi/documents/33.md
+    Interpretation rule: align each cited column with doc definition and unit before analysis.
 
     Args:
         ticker (str): Ticker symbol of the company

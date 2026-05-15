@@ -43,9 +43,10 @@ def get_language_instruction() -> str:
 def get_web_fetch_tool_hint() -> str:
     """Prompt snippet: when to call ``fetch_url`` for official docs (allowlisted https only)."""
     return (
-        " When official field definitions or documentation are required and not present in tool output, "
-        "call `fetch_url` with a full **https** URL on an allowlisted host (default: tushare.pro). "
-        "Do not guess precise API field meanings when accuracy is required—retrieve the doc page first."
+        " Documentation alignment is mandatory when interpreting API fields: before using key fields from a Tushare"
+        " interface, call `fetch_url` with the official doc URL (full **https** on allowlisted hosts, default"
+        " `tushare.pro`), then explicitly align each cited field with the doc definition (name, meaning, and unit)."
+        " Do not guess field semantics, units, or formulas from memory."
     )
 
 

@@ -15,6 +15,8 @@ def get_stock_data(
 
     Official Tushare API docs (A-share ``daily``; use ``fetch_url`` on tushare.pro to align column meanings):
     https://tushare.pro/wctapi/documents/27.md
+    Interpretation rule: when a conclusion depends on specific fields, first fetch the doc and align
+    each cited field with its official definition and unit (do not infer units/semantics from memory).
 
     Args:
         symbol (str): Ticker symbol of the company, e.g. AAPL, TSM
