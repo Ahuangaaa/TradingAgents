@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any, Iterable
 
 from qdrant_client import QdrantClient
@@ -23,10 +24,21 @@ logger = logging.getLogger(__name__)
 def make_client() -> QdrantClient:
     url = os.getenv("QDRANT_URL", "http://localhost:6333")
     key = (os.getenv("QDRANT_API_KEY") or "").strip()
+    timeout_raw = (os.getenv("QDRANT_TIMEOUT_SEC") or "120").strip()
+    try:
+        timeout_sec = max(5.0, float(timeout_raw))
+    except ValueError:
+        timeout_sec = 120.0
     kwargs: dict[str, Any] = {}
     if key:
         kwargs["api_key"] = key
-    logger.info("Qdrant: connecting to %s (api_key=%s)", url, "set" if key else "none")
+    kwargs["timeout"] = timeout_sec
+    logger.info(
+        "Qdrant: connecting to %s (api_key=%s, timeout=%.1fs)",
+        url,
+        "set" if key else "none",
+        timeout_sec,
+    )
     return QdrantClient(url, **kwargs)
 
 
@@ -142,9 +154,42 @@ def upsert_batches(
     total = 0
     workers = max(1, min(int(max_workers), len(chunks)))
 
+    retries_raw = (os.getenv("INGEST_UPSERT_RETRIES") or "3").strip()
+    backoff_raw = (os.getenv("INGEST_UPSERT_RETRY_BACKOFF_SEC") or "1.5").strip()
+    try:
+        retries = max(0, int(retries_raw))
+    except ValueError:
+        retries = 3
+    try:
+        backoff = max(0.2, float(backoff_raw))
+    except ValueError:
+        backoff = 1.5
+
     def _one(batch: list[PointStruct]) -> int:
-        client.upsert(collection_name=collection_name, points=batch, wait=True)
-        return len(batch)
+        for attempt in range(retries + 1):
+            try:
+                client.upsert(collection_name=collection_name, points=batch, wait=True)
+                return len(batch)
+            except Exception as exc:  # noqa: BLE001
+                if attempt >= retries:
+                    logger.error(
+                        "Qdrant upsert failed after %s attempts (batch=%s): %s",
+                        retries + 1,
+                        len(batch),
+                        exc,
+                    )
+                    raise
+                sleep_s = backoff * (2**attempt)
+                logger.warning(
+                    "Qdrant upsert retry %s/%s (batch=%s) after error: %s; sleeping %.1fs",
+                    attempt + 1,
+                    retries,
+                    len(batch),
+                    exc,
+                    sleep_s,
+                )
+                time.sleep(sleep_s)
+        return 0
 
     if workers <= 1 or len(chunks) == 1:
         for ch in tqdm(chunks, desc="qdrant upsert", unit="batch"):
