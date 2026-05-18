@@ -20,9 +20,12 @@ from qdrant_client.http.models import (
 
 logger = logging.getLogger(__name__)
 
+# Matches qdrant/docker-compose.yml host mapping (6333 is often blocked on Windows excluded ranges).
+_DEFAULT_QDRANT_URL = "http://localhost:16333"
+
 
 def make_client() -> QdrantClient:
-    url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    url = os.getenv("QDRANT_URL", _DEFAULT_QDRANT_URL)
     key = (os.getenv("QDRANT_API_KEY") or "").strip()
     timeout_raw = (os.getenv("QDRANT_TIMEOUT_SEC") or "120").strip()
     try:

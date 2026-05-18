@@ -12,8 +12,10 @@ cd qdrant
 docker compose up -d
 ```
 
-- **Dashboard**：http://localhost:6333/dashboard  
-- **REST**：6333；**gRPC**：6334  
+- **Dashboard**：http://localhost:16333/dashboard（容器内仍为 6333；本 compose 将主机 **16333** 映射到 6333，避开 Windows 上 **6260–6359** 等系统保留端口段导致的 bind 失败）  
+- **REST**：本机 **16333** → 容器 6333；**gRPC**：本机 **16334** → 容器 6334  
+
+入库与检索代码的 **`QDRANT_URL` 默认即为 `http://localhost:16333`**，与本目录 compose 一致。若 Qdrant 直接监听本机 **6333**（未改 compose），请设置 `QDRANT_URL=http://localhost:6333`。
 
 ### 常用命令
 
@@ -85,7 +87,7 @@ pip install -r qdrant/requirements-ingest.txt
 | 变量 | 说明 |
 |------|------|
 | `TUSHARE_TOKEN` | 必填，Tushare Pro token |
-| `QDRANT_URL` | 默认 `http://localhost:6333` |
+| `QDRANT_URL` | 默认 `http://localhost:16333`（与 compose 主机端口一致）；直连容器内 6333 映射到本机 6333 时请改为 `http://localhost:6333` |
 | `QDRANT_API_KEY` | 与 compose 中 API Key 一致（若启用） |
 | `QDRANT_COLLECTION` | 默认 `financial_news` |
 | `INGEST_UPSERT_BATCH_SIZE` | 默认 `500` |

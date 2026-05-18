@@ -3,9 +3,10 @@ services:
     image: qdrant/qdrant:latest
     container_name: qdrant
     restart: unless-stopped
+    # 主机端口避开 Windows 常见「排除范围」6260–6359（含 6333/6334），否则 bind 会报权限错误。
     ports:
-      - "6333:6333"   # HTTP / Web UI
-      - "6334:6334"   # gRPC
+      - "16333:6333"   # HTTP / Web UI（本机访问 http://localhost:16333）
+      - "16334:6334"   # gRPC
     volumes:
       - ./qdrant_storage:/qdrant/storage
       - ./qdrant_snapshots:/qdrant/snapshots

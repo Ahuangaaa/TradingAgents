@@ -89,7 +89,7 @@ def _pub_ts_range(win_start: str, win_end: str) -> tuple[int, int]:
 
 def _make_client():
     QdrantClient, *_ = _import_qdrant_client()
-    url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    url = os.getenv("QDRANT_URL", "http://localhost:16333")
     key = (os.getenv("QDRANT_API_KEY") or "").strip()
     kwargs: dict[str, Any] = {}
     if key:
@@ -191,7 +191,7 @@ def vector_search_one(
         ]
     )
     client = _make_client()
-    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:16333")
     has_api_key = bool((os.getenv("QDRANT_API_KEY") or "").strip())
     try:
         try:
