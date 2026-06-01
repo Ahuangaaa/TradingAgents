@@ -1,6 +1,7 @@
 from typing import Optional
 import datetime
 import json
+import re
 import typer
 from pathlib import Path
 from functools import wraps
@@ -630,9 +631,43 @@ def get_analysis_date():
             )
 
 
+def _safe_report_filename_part(text: str) -> str:
+    """Strip characters illegal on Windows/macOS file names."""
+    s = (text or "").strip()
+    s = re.sub(r'[\\/:*?"<>|]', "_", s)
+    return s or "report"
+
+
+def _equity_report_basename(ticker: str) -> str:
+    """PDF/MD stem: ``{中文简称}-{6位代码}`` (e.g. ``贵州茅台-600519``)."""
+    from tradingagents.dataflows.tushare_common import get_pro, resolve_tushare_equity
+
+    raw = (ticker or "").strip()
+    ts_code = resolve_tushare_equity(raw) or raw.upper()
+    symbol = ts_code.split(".", 1)[0] if "." in ts_code else re.sub(r"[^\d]", "", ts_code)[:6]
+    if not symbol:
+        symbol = re.sub(r"[^\d]", "", raw)[:6] or _safe_report_filename_part(raw)
+
+    name = ""
+    if ts_code and "." in ts_code:
+        try:
+            df = get_pro().stock_basic(ts_code=ts_code, fields="ts_code,name")
+            if df is not None and not df.empty:
+                name = str(df.iloc[0].get("name") or "").strip()
+        except Exception:
+            pass
+
+    name_part = _safe_report_filename_part(name)
+    code_part = _safe_report_filename_part(symbol)
+    if name_part and name_part != "report":
+        return f"{name_part}-{code_part}"
+    return code_part
+
+
 def save_report_to_disk(final_state, ticker: str, save_path: Path):
     """Save complete analysis report to disk with organized subfolders."""
     save_path.mkdir(parents=True, exist_ok=True)
+    report_stem = _equity_report_basename(ticker)
     sections = []
 
     # 1. Analysts
@@ -722,11 +757,12 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
             (portfolio_dir / "decision.md").write_text(risk["judge_decision"], encoding="utf-8")
             sections.append(f"## V. Portfolio Manager Decision\n\n### Portfolio Manager\n{risk['judge_decision']}")
 
-    # Write consolidated report
+    # Write consolidated report (filename: ts_code + Chinese name)
     header = f"# Trading Analysis Report: {ticker}\n\nGenerated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-    md_path = save_path / "complete_report.md"
+    md_path = save_path / f"{report_stem}.md"
+    pdf_path = save_path / f"{report_stem}.pdf"
     md_path.write_text(header + "\n\n".join(sections), encoding="utf-8")
-    _save_markdown_as_pdf(md_path, save_path / "complete_report.pdf")
+    _save_markdown_as_pdf(md_path, pdf_path)
     return md_path
 
 
@@ -1334,8 +1370,10 @@ def run_analysis(
         export_path = report_dir / f"export_{timestamp}"
         try:
             report_file = save_report_to_disk(final_state, selections["ticker"], export_path)
+            pdf_file = report_file.with_suffix(".pdf")
             console.print(f"[green]✓ Report saved to:[/green] {export_path.resolve()}")
-            console.print(f"  [dim]Complete report:[/dim] {report_file.name}")
+            console.print(f"  [dim]Markdown:[/dim] {report_file.name}")
+            console.print(f"  [dim]PDF:[/dim] {pdf_file.name}")
         except Exception as e:
             console.print(f"[red]Error saving report: {e}[/red]")
     else:
@@ -1350,8 +1388,10 @@ def run_analysis(
             save_path = Path(save_path_str)
             try:
                 report_file = save_report_to_disk(final_state, selections["ticker"], save_path)
+                pdf_file = report_file.with_suffix(".pdf")
                 console.print(f"\n[green]✓ Report saved to:[/green] {save_path.resolve()}")
-                console.print(f"  [dim]Complete report:[/dim] {report_file.name}")
+                console.print(f"  [dim]Markdown:[/dim] {report_file.name}")
+                console.print(f"  [dim]PDF:[/dim] {pdf_file.name}")
             except Exception as e:
                 console.print(f"[red]Error saving report: {e}[/red]")
 

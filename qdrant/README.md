@@ -111,8 +111,10 @@ pip install -r qdrant/requirements-ingest.txt
 | `DASHSCOPE_EMBED_MODEL` | 默认 **`text-embedding-v4`** |
 | `EMBEDDING_DIMENSIONS` / `NEWS_EMBED_DIM` | 传给 API 的 **`dimension`**，默认 **`1024`**；须与 Qdrant 集合 `vector_size` 一致（v4 支持多档维度见阿里云文档） |
 | `NEWS_EMBED_CONCURRENCY` | DashScope 嵌入 **多批并行**（`ThreadPoolExecutor`），默认 **`4`**，上限 **`16`**；设为 **`1`** 则整段嵌入串行 |
+| `NEWS_EMBED_RETRIES` | 单批嵌入失败后的重试次数，默认 **`3`**（仅对超时/断连/429/5xx 等可恢复错误） |
+| `NEWS_EMBED_RETRY_BACKOFF_SEC` | 重试初始退避秒数，默认 **`2.0`**（指数倍增）；仍失败时自动 **拆半批次** 再试 |
 
-单次 API 最多 **10** 条文本；`news_embed.py` 按批调用，多批之间可并行（顺序与输入一致）。
+单次 API 最多 **10** 条文本；`news_embed.py` 按批调用，多批之间可并行（顺序与输入一致）。若出现 `Read timed out` / `RemoteDisconnected`，可先设 **`NEWS_EMBED_CONCURRENCY=1`** 或 **`2`** 降低并发，再重跑入库（已完成的 Qdrant upsert 不会重复，但嵌入阶段需从头或自行断点续跑）。
 
 ### 并发（可选）
 

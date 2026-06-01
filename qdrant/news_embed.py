@@ -13,6 +13,16 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "text-embedding-v4"
 _MAX_BATCH = 10
+_DEFAULT_RETRIES = 3
+_DEFAULT_BACKOFF_SEC = 2.0
+
+
+class DashScopeEmbedError(RuntimeError):
+    """Raised when DashScope TextEmbedding returns a non-OK HTTP status."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def _embed_concurrency() -> int:
@@ -22,6 +32,64 @@ def _embed_concurrency() -> int:
     except ValueError:
         n = 4
     return max(1, min(16, n))
+
+
+def _embed_retries() -> int:
+    raw = (os.getenv("NEWS_EMBED_RETRIES") or str(_DEFAULT_RETRIES)).strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _DEFAULT_RETRIES
+
+
+def _embed_retry_backoff_sec() -> float:
+    raw = (os.getenv("NEWS_EMBED_RETRY_BACKOFF_SEC") or str(_DEFAULT_BACKOFF_SEC)).strip()
+    try:
+        return max(0.5, float(raw))
+    except ValueError:
+        return _DEFAULT_BACKOFF_SEC
+
+
+def _is_retryable_embed_error(exc: BaseException) -> bool:
+    """Transient network / gateway errors from DashScope HTTP layer."""
+    try:
+        import requests
+    except ImportError:
+        requests = None  # type: ignore[assignment]
+
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, (TimeoutError, ConnectionError, OSError)):
+            return True
+        if requests is not None and isinstance(cur, requests.exceptions.RequestException):
+            return True
+        name = type(cur).__name__.lower()
+        if "timeout" in name or "disconnect" in name or "connection" in name:
+            return True
+        msg = str(cur).lower()
+        if any(
+            token in msg
+            for token in (
+                "timed out",
+                "timeout",
+                "connection aborted",
+                "remote end closed",
+                "connection reset",
+                "temporarily unavailable",
+                "too many requests",
+            )
+        ):
+            return True
+        if isinstance(cur, DashScopeEmbedError) and cur.status_code is not None:
+            return _is_retryable_dashscope_status(cur.status_code)
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+def _is_retryable_dashscope_status(status_code: int) -> bool:
+    return status_code in (408, 429, 500, 502, 503, 504)
 
 
 def _dashscope_api_key() -> str:
@@ -65,7 +133,7 @@ def _parse_vectors_from_output(output: Any, *, n_inputs: int) -> list[list[float
     raise RuntimeError(f"DashScope: unexpected output type: {type(output)!r}")
 
 
-def _embed_dashscope_batch(texts: list[str]) -> list[list[float]]:
+def _embed_dashscope_batch_once(texts: list[str]) -> list[list[float]]:
     import dashscope
     from dashscope import TextEmbedding
 
@@ -83,12 +151,62 @@ def _embed_dashscope_batch(texts: list[str]) -> list[list[float]]:
 
     if resp.status_code != HTTPStatus.OK:
         msg = getattr(resp, "message", None) or getattr(resp, "code", None) or str(resp)
-        raise RuntimeError(f"DashScope TextEmbedding failed: status={resp.status_code!r} detail={msg!r}")
+        raise DashScopeEmbedError(
+            f"DashScope TextEmbedding failed: status={resp.status_code!r} detail={msg!r}",
+            status_code=int(resp.status_code),
+        )
 
     output = getattr(resp, "output", None)
     if not isinstance(output, dict):
         raise RuntimeError(f"DashScope: expected dict output, got {type(output)!r}: {output!r}")
     return _parse_vectors_from_output(output, n_inputs=len(texts))
+
+
+def _embed_dashscope_batch(texts: list[str], *, _allow_split: bool = True) -> list[list[float]]:
+    """Call DashScope once per batch; retry transient errors, then split batch if needed."""
+    if not texts:
+        return []
+
+    retries = _embed_retries()
+    backoff = _embed_retry_backoff_sec()
+    last_exc: BaseException | None = None
+
+    for attempt in range(retries + 1):
+        try:
+            return _embed_dashscope_batch_once(texts)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if not _is_retryable_embed_error(exc):
+                raise
+
+        if attempt >= retries:
+            break
+        sleep_sec = backoff * (2**attempt)
+        logger.warning(
+            "Embed DashScope: retry %s/%s (batch_size=%s) after %s; sleeping %.1fs",
+            attempt + 1,
+            retries,
+            len(texts),
+            last_exc,
+            sleep_sec,
+        )
+        time.sleep(sleep_sec)
+
+    if _allow_split and len(texts) > 1:
+        mid = len(texts) // 2
+        logger.warning(
+            "Embed DashScope: splitting batch of %s into %s + %s after failures: %s",
+            len(texts),
+            mid,
+            len(texts) - mid,
+            last_exc,
+        )
+        return _embed_dashscope_batch(texts[:mid], _allow_split=True) + _embed_dashscope_batch(
+            texts[mid:], _allow_split=True
+        )
+
+    assert last_exc is not None
+    raise last_exc
 
 
 def _embed_batch_with_progress(
