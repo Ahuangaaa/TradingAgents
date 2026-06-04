@@ -1242,7 +1242,7 @@ def get_tushare_industry_peers(
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if not ts_code:
         return (
-            "# Listed competitors (DeepSeek inference + Tushare code check)\n\n"
+            "# Listed competitors (model inference + code validation)\n\n"
             f"_Retrieved: {stamp}_\n\n"
             f"Cannot resolve `{ticker}` as an A-share ts_code (use 6-digit .SH/.SZ/.BJ).\n"
             "For non-A-share competitors, name tickers from filings or official IR.\n"
@@ -1277,18 +1277,17 @@ def get_tushare_industry_peers(
     note = (
         f"**标的**：{focal_name}（`{ts_code}`）。披露行业分类：**{industry or '（空）'}**（监管字段，**不是**竞品选股依据）。\n\n"
         "## 竞品名单如何产生（请在下游报告中如实表述）\n"
-        "1. 后端使用 **DeepSeek OpenAI 兼容 Chat Completions**（专用系统/用户提示词，模型见 `PEER_LLM_MODEL` / 默认 `deepseek-v4-flash`）"
-        " 由模型**独立推理**主营业务竞争关系，输出候选 `ts_code` 列表。\n"
-        "2. **Tushare `stock_basic`** 仅做：代码是否存在、是否处于上市状态、补全证券简称与披露行业列；"
-        "**不作为**「从 Tushare 同行业（或行业分类）列表里挑几只」的依据。\n\n"
+        "1. 后端使用专用推理模型与提示词，**独立推理**主营业务竞争关系，输出候选 `ts_code` 列表。\n"
+        "2. **`stock_basic`** 仅做：代码是否存在、是否处于上市状态、补全证券简称与披露行业列；"
+        "**不作为**「从同行业（或行业分类）成分列表里机械抽取」的依据。\n\n"
         f"下列最多 **{cap}** 家为校码后的竞品，用于 `get_news` / `get_fundamentals` 等后续分析。\n\n"
     )
     if not peers:
         return (
-            "# Listed competitors (DeepSeek inference + Tushare code check)\n\n"
+            "# Listed competitors (model inference + code validation)\n\n"
             f"_Retrieved: {stamp}_\n\n"
             + note
-            + "No validated peer rows (check API keys: `PEER_LLM_API_KEY` / `NEWS_TAG_LLM_API_KEY` / `DEEPSEEK_API_KEY`).\n"
+            + "No validated peer rows (peer inference API unavailable or returned no matches).\n"
         )
 
     lines = [
@@ -1298,7 +1297,7 @@ def get_tushare_industry_peers(
     for p in peers:
         lines.append(f"| {p.ts_code} | {p.name} | {p.industry} |")
     return (
-        "# Listed competitors (DeepSeek inference + Tushare code check)\n\n"
+        "# Listed competitors (model inference + code validation)\n\n"
         f"_Retrieved: {stamp}_\n\n"
         + note
         + "\n"
@@ -1759,4 +1758,230 @@ def get_tushare_margin_detail(ticker: str, start_date: str, end_date: str) -> st
         "Margin trading detail: rzye / rzmre / rzche (margin_detail)",
         ts_code,
         body,
+    )
+
+
+# --- Market-wide capital flow (moneyflow_mkt_dc / hsgt / ind_ths / cnt_ths) ---
+CAPITAL_FLOW_LOOKBACK_TRADING_DAYS = 30
+_CAPITAL_FLOW_DAILY_TOP_N = 15
+_CAPITAL_FLOW_PERIOD_TOP_N = 20
+
+
+def _capital_flow_window(
+    end_date: str, lookback_days: int = CAPITAL_FLOW_LOOKBACK_TRADING_DAYS
+) -> tuple[str, str, list[str]]:
+    """Return (start_yyyymmdd, end_yyyymmdd, trading_days YYYY-MM-DD ascending)."""
+    end_s = str(end_date)[:10]
+    end_dt = pd.Timestamp(end_s)
+    # Calendar buffer so we can take the last N open days inside the range.
+    start_cal = (end_dt - pd.Timedelta(days=int(lookback_days) * 3)).strftime("%Y-%m-%d")
+    all_days = _sse_trading_days_between_inclusive(start_cal, end_s)
+    if not all_days:
+        d1 = to_yyyymmdd(end_s)
+        return d1, d1, [end_s]
+    trading_days = all_days[-int(lookback_days) :]
+    d0 = to_yyyymmdd(trading_days[0])
+    d1 = to_yyyymmdd(trading_days[-1])
+    return d0, d1, trading_days
+
+
+def _flow_rank_slices(df: pd.DataFrame, name_col: str, top_n: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Top inflow / outflow rows by ``net_amount`` (亿元)."""
+    if df is None or df.empty or "net_amount" not in df.columns:
+        return pd.DataFrame(), pd.DataFrame()
+    work = df.copy()
+    work["net_amount"] = pd.to_numeric(work["net_amount"], errors="coerce")
+    work = work.dropna(subset=["net_amount"])
+    if work.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    inflow = work.nlargest(top_n, "net_amount")
+    outflow = work.nsmallest(top_n, "net_amount")
+    cols = [c for c in ["trade_date", name_col, "net_amount", "pct_change", "lead_stock"] if c in work.columns]
+    return inflow[cols], outflow[cols]
+
+
+def _summarize_ths_sector_moneyflow(
+    api_name: str,
+    name_col: str,
+    title: str,
+    trading_days: list[str],
+    *,
+    focal_label: str | None = None,
+    doc_url: str,
+) -> str:
+    """Fetch per-day sector flows; emit period rollup + daily top in/out tables."""
+    daily_parts: list[str] = []
+    all_rows: list[pd.DataFrame] = []
+    missing_days: list[str] = []
+
+    for day in trading_days:
+        d = to_yyyymmdd(day)
+        df = _try_pro_call(api_name, trade_date=d)
+        if df is None or df.empty:
+            missing_days.append(day)
+            continue
+        df = df.copy()
+        df["trade_date"] = day
+        all_rows.append(df)
+        top_in, top_out = _flow_rank_slices(df, name_col, _CAPITAL_FLOW_DAILY_TOP_N)
+        daily_parts.append(
+            f"#### {day}\n\n**净流入 Top{_CAPITAL_FLOW_DAILY_TOP_N}**\n\n"
+            f"{_df_to_markdown_table(top_in) if not top_in.empty else '_(no rows)_'}\n\n"
+            f"**净流出 Top{_CAPITAL_FLOW_DAILY_TOP_N}**\n\n"
+            f"{_df_to_markdown_table(top_out) if not top_out.empty else '_(no rows)_'}\n"
+        )
+
+    lines = [
+        f"# {title}",
+        f"# Window: {trading_days[0]} .. {trading_days[-1]} ({len(trading_days)} SSE trading days)",
+        f"# Retrieved: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"# Doc: {doc_url}",
+        "",
+    ]
+    if missing_days:
+        lines.append(f"_No rows for {len(missing_days)} day(s): {', '.join(missing_days[:8])}"
+                     + (" …" if len(missing_days) > 8 else "") + "_\n")
+
+    if not all_rows:
+        lines.append(
+            f"\nNo data returned ({api_name}). Check Tushare points (~6000+) and token permissions.\n"
+        )
+        return "\n".join(lines)
+
+    combined = pd.concat(all_rows, ignore_index=True)
+    combined["net_amount"] = pd.to_numeric(combined["net_amount"], errors="coerce")
+    period = (
+        combined.groupby(name_col, as_index=False)["net_amount"]
+        .sum()
+        .sort_values("net_amount", ascending=False)
+    )
+    period_top = period.head(_CAPITAL_FLOW_PERIOD_TOP_N)
+    period_bottom = period.tail(_CAPITAL_FLOW_PERIOD_TOP_N).sort_values("net_amount")
+
+    lines.append("## 区间累计净流入 Top（亿元，全窗口加总）\n")
+    lines.append(_df_to_markdown_table(period_top))
+    lines.append("\n## 区间累计净流出 Top（亿元，全窗口加总）\n")
+    lines.append(_df_to_markdown_table(period_bottom))
+
+    if focal_label:
+        focal = str(focal_label).strip()
+        match = period[period[name_col].astype(str).str.contains(focal, na=False, regex=False)]
+        if match.empty:
+            match = period[period[name_col].astype(str) == focal]
+        lines.append(f"\n## 标的关联行业/概念（披露行业: {focal}）\n")
+        if match.empty:
+            lines.append(f"_(未在 {name_col} 列匹配到「{focal}」；请结合相近行业名人工对照。)_\n")
+        else:
+            lines.append(_df_to_markdown_table(match))
+            rank = int((period["net_amount"] >= match.iloc[0]["net_amount"]).sum())
+            lines.append(f"\n区间累计净流入排名约 **第 {rank} / {len(period)}** 位。\n")
+
+    lines.append("\n## 分日 Top 流入/流出\n")
+    lines.append("\n".join(daily_parts))
+
+    body = "\n".join(lines)
+    if len(body) > 180_000:
+        body = body[:180_000] + "\n\n…（输出已截断）"
+    return body
+
+
+def _focal_disclosed_industry(ticker: str | None) -> str | None:
+    if not ticker:
+        return None
+    ts_code = resolve_tushare_equity(ticker)
+    if not ts_code:
+        return None
+    df = _try_pro_call(
+        "stock_basic",
+        ts_code=ts_code,
+        list_status="L",
+        fields="ts_code,name,industry",
+    )
+    if df is None or df.empty:
+        return None
+    ind = str(df.iloc[0].get("industry") or "").strip()
+    return ind or None
+
+
+def get_tushare_moneyflow_mkt_dc(end_date: str, lookback_days: int = CAPITAL_FLOW_LOOKBACK_TRADING_DAYS) -> str:
+    """Eastmoney broad-market money flow (``moneyflow_mkt_dc``) over recent trading days."""
+    d0, d1, trading_days = _capital_flow_window(end_date, lookback_days)
+    df = _try_pro_call("moneyflow_mkt_dc", start_date=d0, end_date=d1)
+    if df is None or df.empty:
+        return (
+            f"# Broad-market moneyflow (moneyflow_mkt_dc)\n\n"
+            f"_Window {trading_days[0]} .. {trading_days[-1]} — no data. "
+            f"Tushare ~6000+ points may be required. "
+            f"See https://tushare.pro/wctapi/documents/345.md_\n"
+        )
+    if "trade_date" in df.columns:
+        df = df.sort_values("trade_date", ascending=False, ignore_index=True)
+    body = df.to_csv(index=False)
+    if len(body) > 80_000:
+        body = body[:80_000] + "\n…（输出已截断）"
+    header = (
+        f"# Broad-market moneyflow (moneyflow_mkt_dc)\n"
+        f"# Window: {trading_days[0]} .. {trading_days[-1]} ({len(trading_days)} trading days)\n"
+        f"# net_amount / buy_elg_lg_md_sm_* in 元 — see official doc for units\n"
+        f"# https://tushare.pro/wctapi/documents/345.md\n\n"
+    )
+    return header + body
+
+
+def get_tushare_moneyflow_hsgt(end_date: str, lookback_days: int = CAPITAL_FLOW_LOOKBACK_TRADING_DAYS) -> str:
+    """Northbound / southbound connect flows (``moneyflow_hsgt``)."""
+    d0, d1, trading_days = _capital_flow_window(end_date, lookback_days)
+    df = _try_pro_call("moneyflow_hsgt", start_date=d0, end_date=d1)
+    if df is None or df.empty:
+        return (
+            f"# Connect moneyflow (moneyflow_hsgt)\n\n"
+            f"_Window {trading_days[0]} .. {trading_days[-1]} — no data. "
+            f"See https://tushare.pro/wctapi/documents/47.md_\n"
+        )
+    if "trade_date" in df.columns:
+        df = df.sort_values("trade_date", ascending=False, ignore_index=True)
+    body = df.to_csv(index=False)
+    if len(body) > 80_000:
+        body = body[:80_000] + "\n…（输出已截断）"
+    header = (
+        f"# Connect moneyflow (moneyflow_hsgt)\n"
+        f"# Window: {trading_days[0]} .. {trading_days[-1]} ({len(trading_days)} trading days)\n"
+        f"# https://tushare.pro/wctapi/documents/47.md\n\n"
+    )
+    return header + body
+
+
+def get_tushare_moneyflow_ind_ths(
+    end_date: str,
+    lookback_days: int = CAPITAL_FLOW_LOOKBACK_TRADING_DAYS,
+    ticker: str | None = None,
+) -> str:
+    """THS industry moneyflow with daily top-N and period rollup."""
+    _, _, trading_days = _capital_flow_window(end_date, lookback_days)
+    focal = _focal_disclosed_industry(ticker)
+    return _summarize_ths_sector_moneyflow(
+        "moneyflow_ind_ths",
+        "industry",
+        "THS industry moneyflow (moneyflow_ind_ths)",
+        trading_days,
+        focal_label=focal,
+        doc_url="https://tushare.pro/wctapi/documents/343.md",
+    )
+
+
+def get_tushare_moneyflow_cnt_ths(
+    end_date: str,
+    lookback_days: int = CAPITAL_FLOW_LOOKBACK_TRADING_DAYS,
+    ticker: str | None = None,
+) -> str:
+    """THS concept-sector moneyflow with daily top-N and period rollup."""
+    _, _, trading_days = _capital_flow_window(end_date, lookback_days)
+    focal = _focal_disclosed_industry(ticker)
+    return _summarize_ths_sector_moneyflow(
+        "moneyflow_cnt_ths",
+        "name",
+        "THS concept moneyflow (moneyflow_cnt_ths)",
+        trading_days,
+        focal_label=focal,
+        doc_url="https://tushare.pro/wctapi/documents/371.md",
     )

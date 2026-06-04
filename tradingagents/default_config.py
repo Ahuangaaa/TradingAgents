@@ -38,13 +38,14 @@ DEFAULT_CONFIG = {
     "max_risk_discuss_rounds": 1,
     # LangGraph recursion_limit (each analyst↔tools step counts). Raise when many
     # tool rounds (e.g. get_news per peer + get_industry_peers + fundamentals).
-    "max_recur_limit": 400,
+    "max_recur_limit": 450,
     # Data vendor configuration (Tushare Pro only)
     "data_vendors": {
         "core_stock_apis": "tushare",
         "technical_indicators": "tushare",
         "fundamental_data": "tushare",
         "news_data": "tushare",
+        "capital_flow": "tushare",
     },
     # Tool-level configuration (takes precedence over category-level)
     "tool_vendors": {

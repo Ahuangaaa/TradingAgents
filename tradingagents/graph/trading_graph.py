@@ -46,6 +46,12 @@ from tradingagents.agents.utils.agent_utils import (
     get_margin_detail,
 )
 from tradingagents.agents.utils.web_fetch_tool import fetch_url
+from tradingagents.agents.utils.capital_flow_tools import (
+    get_moneyflow_cnt_ths,
+    get_moneyflow_hsgt,
+    get_moneyflow_ind_ths,
+    get_moneyflow_mkt_dc,
+)
 
 from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id
 from .conditional_logic import ConditionalLogic
@@ -60,7 +66,14 @@ class TradingAgentsGraph:
 
     def __init__(
         self,
-        selected_analysts=["market", "social", "news", "fundamentals"],
+        selected_analysts=[
+            "broad_market",
+            "capital_flow",
+            "market",
+            "social",
+            "news",
+            "fundamentals",
+        ],
         debug=False,
         config: Dict[str, Any] = None,
         callbacks: Optional[List] = None,
@@ -180,6 +193,21 @@ class TradingAgentsGraph:
     def _create_tool_nodes(self) -> Dict[str, ToolNode]:
         """Create tool nodes for different data sources using abstract methods."""
         return {
+            "broad_market": ToolNode(
+                [
+                    get_moneyflow_mkt_dc,
+                    get_moneyflow_hsgt,
+                    fetch_url,
+                ]
+            ),
+            "capital_flow": ToolNode(
+                [
+                    get_moneyflow_ind_ths,
+                    get_moneyflow_cnt_ths,
+                    get_moneyflow_hsgt,
+                    fetch_url,
+                ]
+            ),
             "market": ToolNode(
                 [
                     # Core stock data tools
@@ -393,6 +421,8 @@ class TradingAgentsGraph:
         self.log_states_dict[str(trade_date)] = {
             "company_of_interest": final_state["company_of_interest"],
             "trade_date": final_state["trade_date"],
+            "broad_market_report": final_state.get("broad_market_report", ""),
+            "capital_flow_report": final_state.get("capital_flow_report", ""),
             "market_report": final_state["market_report"],
             "sentiment_report": final_state["sentiment_report"],
             "news_report": final_state["news_report"],

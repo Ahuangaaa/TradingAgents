@@ -10,6 +10,7 @@ from tradingagents.agents import *
 from tradingagents.agents.utils.agent_states import AgentState
 from tradingagents.dataflows.run_trace_context import tools_phase
 
+from .analyst_labels import analyst_node_name, msg_clear_node_name
 from .conditional_logic import ConditionalLogic
 
 
@@ -42,17 +43,28 @@ class GraphSetup:
         self.conditional_logic = conditional_logic
 
     def setup_graph(
-        self, selected_analysts=["market", "social", "news", "fundamentals"]
+        self, selected_analysts=None
     ):
         """Set up and compile the agent workflow graph.
 
         Args:
             selected_analysts (list): List of analyst types to include. Options are:
+                - "broad_market": Broad market / index flow analyst
+                - "capital_flow": Sector & concept capital flow analyst
                 - "market": Market analyst
                 - "social": Social media analyst
                 - "news": News analyst
                 - "fundamentals": Fundamentals analyst
         """
+        if selected_analysts is None:
+            selected_analysts = [
+                "broad_market",
+                "capital_flow",
+                "market",
+                "social",
+                "news",
+                "fundamentals",
+            ]
         if len(selected_analysts) == 0:
             raise ValueError("Trading Agents Graph Setup Error: no analysts selected!")
 
@@ -60,6 +72,20 @@ class GraphSetup:
         analyst_nodes = {}
         delete_nodes = {}
         tool_nodes = {}
+
+        if "broad_market" in selected_analysts:
+            analyst_nodes["broad_market"] = create_broad_market_analyst(
+                self.quick_thinking_llm
+            )
+            delete_nodes["broad_market"] = create_msg_delete()
+            tool_nodes["broad_market"] = self.tool_nodes["broad_market"]
+
+        if "capital_flow" in selected_analysts:
+            analyst_nodes["capital_flow"] = create_capital_flow_analyst(
+                self.quick_thinking_llm
+            )
+            delete_nodes["capital_flow"] = create_msg_delete()
+            tool_nodes["capital_flow"] = self.tool_nodes["capital_flow"]
 
         if "market" in selected_analysts:
             analyst_nodes["market"] = create_market_analyst(
@@ -109,10 +135,8 @@ class GraphSetup:
 
         # Add analyst nodes to the graph
         for analyst_type, node in analyst_nodes.items():
-            workflow.add_node(f"{analyst_type.capitalize()} Analyst", node)
-            workflow.add_node(
-                f"Msg Clear {analyst_type.capitalize()}", delete_nodes[analyst_type]
-            )
+            workflow.add_node(analyst_node_name(analyst_type), node)
+            workflow.add_node(msg_clear_node_name(analyst_type), delete_nodes[analyst_type])
             workflow.add_node(
                 f"tools_{analyst_type}",
                 _wrap_tools_node(analyst_type, tool_nodes[analyst_type]),
@@ -132,13 +156,13 @@ class GraphSetup:
         # Define edges
         # Start with the first analyst
         first_analyst = selected_analysts[0]
-        workflow.add_edge(START, f"{first_analyst.capitalize()} Analyst")
+        workflow.add_edge(START, analyst_node_name(first_analyst))
 
         # Connect analysts in sequence
         for i, analyst_type in enumerate(selected_analysts):
-            current_analyst = f"{analyst_type.capitalize()} Analyst"
+            current_analyst = analyst_node_name(analyst_type)
             current_tools = f"tools_{analyst_type}"
-            current_clear = f"Msg Clear {analyst_type.capitalize()}"
+            current_clear = msg_clear_node_name(analyst_type)
 
             # Add conditional edges for current analyst
             workflow.add_conditional_edges(
@@ -150,7 +174,7 @@ class GraphSetup:
 
             # Connect to next analyst or to Bull Researcher if this is the last analyst
             if i < len(selected_analysts) - 1:
-                next_analyst = f"{selected_analysts[i+1].capitalize()} Analyst"
+                next_analyst = analyst_node_name(selected_analysts[i + 1])
                 workflow.add_edge(current_clear, next_analyst)
             else:
                 workflow.add_edge(current_clear, "Deep Fundamental Checklist")

@@ -2,6 +2,8 @@
 
 from tradingagents.agents.utils.agent_states import AgentState
 
+from .analyst_labels import msg_clear_node_name
+
 
 class ConditionalLogic:
     """Handles conditional logic for determining graph flow."""
@@ -11,13 +13,27 @@ class ConditionalLogic:
         self.max_debate_rounds = max_debate_rounds
         self.max_risk_discuss_rounds = max_risk_discuss_rounds
 
+    def should_continue_broad_market(self, state: AgentState):
+        messages = state["messages"]
+        last_message = messages[-1]
+        if last_message.tool_calls:
+            return "tools_broad_market"
+        return msg_clear_node_name("broad_market")
+
+    def should_continue_capital_flow(self, state: AgentState):
+        messages = state["messages"]
+        last_message = messages[-1]
+        if last_message.tool_calls:
+            return "tools_capital_flow"
+        return msg_clear_node_name("capital_flow")
+
     def should_continue_market(self, state: AgentState):
         """Determine if market analysis should continue."""
         messages = state["messages"]
         last_message = messages[-1]
         if last_message.tool_calls:
             return "tools_market"
-        return "Msg Clear Market"
+        return msg_clear_node_name("market")
 
     def should_continue_social(self, state: AgentState):
         """Determine if social media analysis should continue."""
@@ -25,7 +41,7 @@ class ConditionalLogic:
         last_message = messages[-1]
         if last_message.tool_calls:
             return "tools_social"
-        return "Msg Clear Social"
+        return msg_clear_node_name("social")
 
     def should_continue_news(self, state: AgentState):
         """Determine if news analysis should continue."""
@@ -33,7 +49,7 @@ class ConditionalLogic:
         last_message = messages[-1]
         if last_message.tool_calls:
             return "tools_news"
-        return "Msg Clear News"
+        return msg_clear_node_name("news")
 
     def should_continue_fundamentals(self, state: AgentState):
         """Determine if fundamentals analysis should continue."""
@@ -41,7 +57,7 @@ class ConditionalLogic:
         last_message = messages[-1]
         if last_message.tool_calls:
             return "tools_fundamentals"
-        return "Msg Clear Fundamentals"
+        return msg_clear_node_name("fundamentals")
 
     def should_continue_debate(self, state: AgentState) -> str:
         """Determine if debate should continue."""

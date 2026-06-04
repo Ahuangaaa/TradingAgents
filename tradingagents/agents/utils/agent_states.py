@@ -50,6 +50,8 @@ class AgentState(MessagesState):
     sender: Annotated[str, "Agent that sent this message"]
 
     # research step
+    broad_market_report: Annotated[str, "Report from the Broad Market Analyst"]
+    capital_flow_report: Annotated[str, "Report from the Capital Flow Analyst"]
     market_report: Annotated[str, "Report from the Market Analyst"]
     sentiment_report: Annotated[str, "Report from the Social Media Analyst"]
     news_report: Annotated[

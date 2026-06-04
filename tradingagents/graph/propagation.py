@@ -48,6 +48,8 @@ class Propagator:
                     "count": 0,
                 }
             ),
+            "broad_market_report": "",
+            "capital_flow_report": "",
             "market_report": "",
             "fundamentals_report": "",
             "sentiment_report": "",

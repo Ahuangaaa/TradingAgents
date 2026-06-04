@@ -43,10 +43,40 @@ def get_language_instruction() -> str:
 def get_web_fetch_tool_hint() -> str:
     """Prompt snippet: when to call ``fetch_url`` for official docs (allowlisted https only)."""
     return (
-        " Documentation alignment is mandatory when interpreting API fields: before using key fields from a Tushare"
-        " interface, call `fetch_url` with the official doc URL (full **https** on allowlisted hosts, default"
-        " `tushare.pro`), then explicitly align each cited field with the doc definition (name, meaning, and unit)."
+        " Documentation alignment is mandatory when interpreting API fields: before using key fields from any"
+        " data tool, call `fetch_url` with the official interface doc URL (full **https** on allowlisted hosts),"
+        " then explicitly align each cited field with the doc definition (name, meaning, and unit)."
         " Do not guess field semantics, units, or formulas from memory."
+    )
+
+
+def get_internal_doc_alignment_rule() -> str:
+    """Mandatory doc alignment during analysis; must not appear as a report appendix."""
+    return (
+        " **Field-doc alignment (mandatory, internal):** Before using API fields in conclusions,"
+        " call `fetch_url` on the official interface documentation and align each field's meaning and unit."
+        " Perform this verification during tool use and reasoning;"
+        " **do not** add a separate 「字段释义与单位对齐」 section, table, or appendix to the deliverable report."
+    )
+
+
+def get_report_branding_rules() -> str:
+    """Client-facing report must not name vendors or infrastructure brands."""
+    return (
+        " **Deliverable style:** The report is client-facing. Do not mention vendor, provider, or"
+        " infrastructure brand names (data platforms, LLM products, vector databases, etc.)."
+        " Describe sources generically (e.g. 行情数据、官方接口文档、新闻库、推理筛选)."
+        " For citations without a URL, use `数据渠道-<简称>` instead of vendor-prefixed labels."
+    )
+
+
+def get_industry_peer_instruction() -> str:
+    """How analysts should describe competitor sourcing in prose."""
+    return (
+        " Call `get_industry_peers(ticker, curr_date)` first with the focal ticker and"
+        " **curr_date = current analysis date**. In the report, describe peers using the tool header:"
+        " model-inferred listed competitors with exchange code validation —"
+        " **not** an industry-constituent or same-industry mechanical sample."
     )
 
 

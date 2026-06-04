@@ -12,6 +12,10 @@ from .tushare_data import (
     get_tushare_holder_number,
     get_tushare_stock_moneyflow,
     get_tushare_margin_detail,
+    get_tushare_moneyflow_mkt_dc,
+    get_tushare_moneyflow_hsgt,
+    get_tushare_moneyflow_ind_ths,
+    get_tushare_moneyflow_cnt_ths,
 )
 from .config import get_config
 
@@ -49,7 +53,16 @@ TOOLS_CATEGORIES = {
             "get_stock_moneyflow",
             "get_margin_detail",
         ]
-    }
+    },
+    "capital_flow": {
+        "description": "Market-wide and sector capital flow APIs",
+        "tools": [
+            "get_moneyflow_mkt_dc",
+            "get_moneyflow_hsgt",
+            "get_moneyflow_ind_ths",
+            "get_moneyflow_cnt_ths",
+        ],
+    },
 }
 
 VENDOR_LIST = [
@@ -96,6 +109,18 @@ VENDOR_METHODS = {
     },
     "get_margin_detail": {
         "tushare": get_tushare_margin_detail,
+    },
+    "get_moneyflow_mkt_dc": {
+        "tushare": get_tushare_moneyflow_mkt_dc,
+    },
+    "get_moneyflow_hsgt": {
+        "tushare": get_tushare_moneyflow_hsgt,
+    },
+    "get_moneyflow_ind_ths": {
+        "tushare": get_tushare_moneyflow_ind_ths,
+    },
+    "get_moneyflow_cnt_ths": {
+        "tushare": get_tushare_moneyflow_cnt_ths,
     },
 }
 

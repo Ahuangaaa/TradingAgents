@@ -28,6 +28,7 @@ from rich.rule import Rule
 import importlib
 import html
 
+from tradingagents.agents.utils.report_publish import prepare_report_for_publish
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.dataflows.tushare_data import clear_run_news_tool_cache
@@ -64,6 +65,8 @@ class MessageBuffer:
 
     # Analyst name mapping
     ANALYST_MAPPING = {
+        "broad_market": "Broad Market Analyst",
+        "capital_flow": "Capital Flow Analyst",
         "market": "Market Analyst",
         "social": "Social Analyst",
         "news": "News Analyst",
@@ -74,6 +77,8 @@ class MessageBuffer:
     # analyst_key: which analyst selection controls this section (None = always included)
     # finalizing_agent: which agent must be "completed" for this report to count as done
     REPORT_SECTIONS = {
+        "broad_market_report": ("broad_market", "Broad Market Analyst"),
+        "capital_flow_report": ("capital_flow", "Capital Flow Analyst"),
         "market_report": ("market", "Market Analyst"),
         "sentiment_report": ("social", "Social Analyst"),
         "news_report": ("news", "News Analyst"),
@@ -183,6 +188,8 @@ class MessageBuffer:
         if latest_section and latest_content:
             # Format the current section for display
             section_titles = {
+                "broad_market_report": "Broad Market Analysis",
+                "capital_flow_report": "Capital Flow Analysis",
                 "market_report": "Market Analysis",
                 "sentiment_report": "Social Sentiment",
                 "news_report": "News Analysis",
@@ -204,6 +211,8 @@ class MessageBuffer:
 
         # Analyst Team Reports - use .get() to handle missing sections
         analyst_sections = [
+            "broad_market_report",
+            "capital_flow_report",
             "market_report",
             "sentiment_report",
             "news_report",
@@ -212,6 +221,14 @@ class MessageBuffer:
         ]
         if any(self.report_sections.get(section) for section in analyst_sections):
             report_parts.append("## Analyst Team Reports")
+            if self.report_sections.get("broad_market_report"):
+                report_parts.append(
+                    f"### Broad Market Analysis\n{self.report_sections['broad_market_report']}"
+                )
+            if self.report_sections.get("capital_flow_report"):
+                report_parts.append(
+                    f"### Capital Flow Analysis\n{self.report_sections['capital_flow_report']}"
+                )
             if self.report_sections.get("market_report"):
                 report_parts.append(
                     f"### Market Analysis\n{self.report_sections['market_report']}"
@@ -307,6 +324,8 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
     # Group agents by team - filter to only include agents in agent_status
     all_teams = {
         "Analyst Team": [
+            "Broad Market Analyst",
+            "Capital Flow Analyst",
             "Market Analyst",
             "Social Analyst",
             "News Analyst",
@@ -664,6 +683,11 @@ def _equity_report_basename(ticker: str) -> str:
     return code_part
 
 
+def _publish_text(text: str | None) -> str:
+    """Client-facing report body (strip internal alignment blocks, redact vendor names)."""
+    return prepare_report_for_publish(text)
+
+
 def save_report_to_disk(final_state, ticker: str, save_path: Path):
     """Save complete analysis report to disk with organized subfolders."""
     save_path.mkdir(parents=True, exist_ok=True)
@@ -673,30 +697,41 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
     # 1. Analysts
     analysts_dir = save_path / "1_analysts"
     analyst_parts = []
+    if final_state.get("broad_market_report"):
+        analysts_dir.mkdir(exist_ok=True)
+        text = _publish_text(final_state["broad_market_report"])
+        (analysts_dir / "broad_market.md").write_text(text, encoding="utf-8")
+        analyst_parts.append(("Broad Market Analyst", text))
+    if final_state.get("capital_flow_report"):
+        analysts_dir.mkdir(exist_ok=True)
+        text = _publish_text(final_state["capital_flow_report"])
+        (analysts_dir / "capital_flow.md").write_text(text, encoding="utf-8")
+        analyst_parts.append(("Capital Flow Analyst", text))
     if final_state.get("market_report"):
         analysts_dir.mkdir(exist_ok=True)
-        (analysts_dir / "market.md").write_text(final_state["market_report"], encoding="utf-8")
-        analyst_parts.append(("Market Analyst", final_state["market_report"]))
+        text = _publish_text(final_state["market_report"])
+        (analysts_dir / "market.md").write_text(text, encoding="utf-8")
+        analyst_parts.append(("Market Analyst", text))
     if final_state.get("sentiment_report"):
         analysts_dir.mkdir(exist_ok=True)
-        (analysts_dir / "sentiment.md").write_text(final_state["sentiment_report"], encoding="utf-8")
-        analyst_parts.append(("Social Analyst", final_state["sentiment_report"]))
+        text = _publish_text(final_state["sentiment_report"])
+        (analysts_dir / "sentiment.md").write_text(text, encoding="utf-8")
+        analyst_parts.append(("Social Analyst", text))
     if final_state.get("news_report"):
         analysts_dir.mkdir(exist_ok=True)
-        (analysts_dir / "news.md").write_text(final_state["news_report"], encoding="utf-8")
-        analyst_parts.append(("News Analyst", final_state["news_report"]))
+        text = _publish_text(final_state["news_report"])
+        (analysts_dir / "news.md").write_text(text, encoding="utf-8")
+        analyst_parts.append(("News Analyst", text))
     if final_state.get("fundamentals_report"):
         analysts_dir.mkdir(exist_ok=True)
-        (analysts_dir / "fundamentals.md").write_text(final_state["fundamentals_report"], encoding="utf-8")
-        analyst_parts.append(("Fundamentals Analyst", final_state["fundamentals_report"]))
+        text = _publish_text(final_state["fundamentals_report"])
+        (analysts_dir / "fundamentals.md").write_text(text, encoding="utf-8")
+        analyst_parts.append(("Fundamentals Analyst", text))
     if final_state.get("deep_fundamental_checklist_report"):
         analysts_dir.mkdir(exist_ok=True)
-        (analysts_dir / "deep_fundamental_checklist.md").write_text(
-            final_state["deep_fundamental_checklist_report"], encoding="utf-8"
-        )
-        analyst_parts.append(
-            ("Deep Fundamental Checklist", final_state["deep_fundamental_checklist_report"])
-        )
+        text = _publish_text(final_state["deep_fundamental_checklist_report"])
+        (analysts_dir / "deep_fundamental_checklist.md").write_text(text, encoding="utf-8")
+        analyst_parts.append(("Deep Fundamental Checklist", text))
     if analyst_parts:
         content = "\n\n".join(f"### {name}\n{text}" for name, text in analyst_parts)
         sections.append(f"## I. Analyst Team Reports\n\n{content}")
@@ -708,16 +743,19 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
         research_parts = []
         if debate.get("bull_history"):
             research_dir.mkdir(exist_ok=True)
-            (research_dir / "bull.md").write_text(debate["bull_history"], encoding="utf-8")
-            research_parts.append(("Bull Researcher", debate["bull_history"]))
+            text = _publish_text(debate["bull_history"])
+            (research_dir / "bull.md").write_text(text, encoding="utf-8")
+            research_parts.append(("Bull Researcher", text))
         if debate.get("bear_history"):
             research_dir.mkdir(exist_ok=True)
-            (research_dir / "bear.md").write_text(debate["bear_history"], encoding="utf-8")
-            research_parts.append(("Bear Researcher", debate["bear_history"]))
+            text = _publish_text(debate["bear_history"])
+            (research_dir / "bear.md").write_text(text, encoding="utf-8")
+            research_parts.append(("Bear Researcher", text))
         if debate.get("judge_decision"):
             research_dir.mkdir(exist_ok=True)
-            (research_dir / "manager.md").write_text(debate["judge_decision"], encoding="utf-8")
-            research_parts.append(("Research Manager", debate["judge_decision"]))
+            text = _publish_text(debate["judge_decision"])
+            (research_dir / "manager.md").write_text(text, encoding="utf-8")
+            research_parts.append(("Research Manager", text))
         if research_parts:
             content = "\n\n".join(f"### {name}\n{text}" for name, text in research_parts)
             sections.append(f"## II. Research Team Decision\n\n{content}")
@@ -726,8 +764,9 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
     if final_state.get("trader_investment_plan"):
         trading_dir = save_path / "3_trading"
         trading_dir.mkdir(exist_ok=True)
-        (trading_dir / "trader.md").write_text(final_state["trader_investment_plan"], encoding="utf-8")
-        sections.append(f"## III. Trading Team Plan\n\n### Trader\n{final_state['trader_investment_plan']}")
+        text = _publish_text(final_state["trader_investment_plan"])
+        (trading_dir / "trader.md").write_text(text, encoding="utf-8")
+        sections.append(f"## III. Trading Team Plan\n\n### Trader\n{text}")
 
     # 4. Risk Management
     if final_state.get("risk_debate_state"):
@@ -736,16 +775,19 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
         risk_parts = []
         if risk.get("aggressive_history"):
             risk_dir.mkdir(exist_ok=True)
-            (risk_dir / "aggressive.md").write_text(risk["aggressive_history"], encoding="utf-8")
-            risk_parts.append(("Aggressive Analyst", risk["aggressive_history"]))
+            text = _publish_text(risk["aggressive_history"])
+            (risk_dir / "aggressive.md").write_text(text, encoding="utf-8")
+            risk_parts.append(("Aggressive Analyst", text))
         if risk.get("conservative_history"):
             risk_dir.mkdir(exist_ok=True)
-            (risk_dir / "conservative.md").write_text(risk["conservative_history"], encoding="utf-8")
-            risk_parts.append(("Conservative Analyst", risk["conservative_history"]))
+            text = _publish_text(risk["conservative_history"])
+            (risk_dir / "conservative.md").write_text(text, encoding="utf-8")
+            risk_parts.append(("Conservative Analyst", text))
         if risk.get("neutral_history"):
             risk_dir.mkdir(exist_ok=True)
-            (risk_dir / "neutral.md").write_text(risk["neutral_history"], encoding="utf-8")
-            risk_parts.append(("Neutral Analyst", risk["neutral_history"]))
+            text = _publish_text(risk["neutral_history"])
+            (risk_dir / "neutral.md").write_text(text, encoding="utf-8")
+            risk_parts.append(("Neutral Analyst", text))
         if risk_parts:
             content = "\n\n".join(f"### {name}\n{text}" for name, text in risk_parts)
             sections.append(f"## IV. Risk Management Team Decision\n\n{content}")
@@ -754,8 +796,9 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
         if risk.get("judge_decision"):
             portfolio_dir = save_path / "5_portfolio"
             portfolio_dir.mkdir(exist_ok=True)
-            (portfolio_dir / "decision.md").write_text(risk["judge_decision"], encoding="utf-8")
-            sections.append(f"## V. Portfolio Manager Decision\n\n### Portfolio Manager\n{risk['judge_decision']}")
+            text = _publish_text(risk["judge_decision"])
+            (portfolio_dir / "decision.md").write_text(text, encoding="utf-8")
+            sections.append(f"## V. Portfolio Manager Decision\n\n### Portfolio Manager\n{text}")
 
     # Write consolidated report (filename: ts_code + Chinese name)
     header = f"# Trading Analysis Report: {ticker}\n\nGenerated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
@@ -834,17 +877,28 @@ def display_complete_report(final_state):
 
     # I. Analyst Team Reports
     analysts = []
+    if final_state.get("broad_market_report"):
+        analysts.append(
+            ("Broad Market Analyst", _publish_text(final_state["broad_market_report"]))
+        )
+    if final_state.get("capital_flow_report"):
+        analysts.append(
+            ("Capital Flow Analyst", _publish_text(final_state["capital_flow_report"]))
+        )
     if final_state.get("market_report"):
-        analysts.append(("Market Analyst", final_state["market_report"]))
+        analysts.append(("Market Analyst", _publish_text(final_state["market_report"])))
     if final_state.get("sentiment_report"):
-        analysts.append(("Social Analyst", final_state["sentiment_report"]))
+        analysts.append(("Social Analyst", _publish_text(final_state["sentiment_report"])))
     if final_state.get("news_report"):
-        analysts.append(("News Analyst", final_state["news_report"]))
+        analysts.append(("News Analyst", _publish_text(final_state["news_report"])))
     if final_state.get("fundamentals_report"):
-        analysts.append(("Fundamentals Analyst", final_state["fundamentals_report"]))
+        analysts.append(("Fundamentals Analyst", _publish_text(final_state["fundamentals_report"])))
     if final_state.get("deep_fundamental_checklist_report"):
         analysts.append(
-            ("Deep Fundamental Checklist", final_state["deep_fundamental_checklist_report"])
+            (
+                "Deep Fundamental Checklist",
+                _publish_text(final_state["deep_fundamental_checklist_report"]),
+            )
         )
     if analysts:
         console.print(Panel("[bold]I. Analyst Team Reports[/bold]", border_style="cyan"))
@@ -856,11 +910,11 @@ def display_complete_report(final_state):
         debate = final_state["investment_debate_state"]
         research = []
         if debate.get("bull_history"):
-            research.append(("Bull Researcher", debate["bull_history"]))
+            research.append(("Bull Researcher", _publish_text(debate["bull_history"])))
         if debate.get("bear_history"):
-            research.append(("Bear Researcher", debate["bear_history"]))
+            research.append(("Bear Researcher", _publish_text(debate["bear_history"])))
         if debate.get("judge_decision"):
-            research.append(("Research Manager", debate["judge_decision"]))
+            research.append(("Research Manager", _publish_text(debate["judge_decision"])))
         if research:
             console.print(Panel("[bold]II. Research Team Decision[/bold]", border_style="magenta"))
             for title, content in research:
@@ -869,18 +923,25 @@ def display_complete_report(final_state):
     # III. Trading Team
     if final_state.get("trader_investment_plan"):
         console.print(Panel("[bold]III. Trading Team Plan[/bold]", border_style="yellow"))
-        console.print(Panel(Markdown(final_state["trader_investment_plan"]), title="Trader", border_style="blue", padding=(1, 2)))
+        console.print(
+            Panel(
+                Markdown(_publish_text(final_state["trader_investment_plan"])),
+                title="Trader",
+                border_style="blue",
+                padding=(1, 2),
+            )
+        )
 
     # IV. Risk Management Team
     if final_state.get("risk_debate_state"):
         risk = final_state["risk_debate_state"]
         risk_reports = []
         if risk.get("aggressive_history"):
-            risk_reports.append(("Aggressive Analyst", risk["aggressive_history"]))
+            risk_reports.append(("Aggressive Analyst", _publish_text(risk["aggressive_history"])))
         if risk.get("conservative_history"):
-            risk_reports.append(("Conservative Analyst", risk["conservative_history"]))
+            risk_reports.append(("Conservative Analyst", _publish_text(risk["conservative_history"])))
         if risk.get("neutral_history"):
-            risk_reports.append(("Neutral Analyst", risk["neutral_history"]))
+            risk_reports.append(("Neutral Analyst", _publish_text(risk["neutral_history"])))
         if risk_reports:
             console.print(Panel("[bold]IV. Risk Management Team Decision[/bold]", border_style="red"))
             for title, content in risk_reports:
@@ -889,7 +950,14 @@ def display_complete_report(final_state):
         # V. Portfolio Manager Decision
         if risk.get("judge_decision"):
             console.print(Panel("[bold]V. Portfolio Manager Decision[/bold]", border_style="green"))
-            console.print(Panel(Markdown(risk["judge_decision"]), title="Portfolio Manager", border_style="blue", padding=(1, 2)))
+            console.print(
+                Panel(
+                    Markdown(_publish_text(risk["judge_decision"])),
+                    title="Portfolio Manager",
+                    border_style="blue",
+                    padding=(1, 2),
+                )
+            )
 
 
 def update_research_team_status(status):
@@ -900,14 +968,25 @@ def update_research_team_status(status):
 
 
 # Ordered list of analysts for status transitions
-ANALYST_ORDER = ["market", "social", "news", "fundamentals"]
+ANALYST_ORDER = [
+    "broad_market",
+    "capital_flow",
+    "market",
+    "social",
+    "news",
+    "fundamentals",
+]
 ANALYST_AGENT_NAMES = {
+    "broad_market": "Broad Market Analyst",
+    "capital_flow": "Capital Flow Analyst",
     "market": "Market Analyst",
     "social": "Social Analyst",
     "news": "News Analyst",
     "fundamentals": "Fundamentals Analyst",
 }
 ANALYST_REPORT_MAP = {
+    "broad_market": "broad_market_report",
+    "capital_flow": "capital_flow_report",
     "market": "market_report",
     "social": "sentiment_report",
     "news": "news_report",
@@ -1179,7 +1258,8 @@ def run_analysis(
                 content = obj.report_sections[section_name]
                 if content:
                     file_name = f"{section_name}.md"
-                    text = "\n".join(str(item) for item in content) if isinstance(content, list) else content
+                    raw = "\n".join(str(item) for item in content) if isinstance(content, list) else content
+                    text = _publish_text(raw)
                     with open(report_dir / file_name, "w", encoding="utf-8") as f:
                         f.write(text)
         return wrapper
@@ -1207,7 +1287,8 @@ def run_analysis(
         update_display(layout, stats_handler=stats_handler, start_time=start_time)
 
         # Update agent status to in_progress for the first analyst
-        first_analyst = f"{selections['analysts'][0].value.capitalize()} Analyst"
+        first_key = selected_analyst_keys[0]
+        first_analyst = ANALYST_AGENT_NAMES[first_key]
         message_buffer.update_agent_status(first_analyst, "in_progress")
         update_display(layout, stats_handler=stats_handler, start_time=start_time)
 

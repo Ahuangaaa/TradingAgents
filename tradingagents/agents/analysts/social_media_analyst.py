@@ -3,9 +3,13 @@ from tradingagents.dataflows.run_trace_context import analyst_llm_phase
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
     get_industry_peers,
+    get_industry_peer_instruction,
+    get_internal_doc_alignment_rule,
     get_language_instruction,
+    get_report_branding_rules,
     get_web_fetch_tool_hint,
 )
+from tradingagents.agents.utils.report_publish import prepare_report_for_publish
 from tradingagents.agents.utils.news_data_tools import (
     get_news,
     get_global_news,
@@ -42,16 +46,17 @@ def create_social_media_analyst(llm):
 
             system_message = (
                 "You are a social media and company specific news researcher/analyst tasked with analyzing social media posts, recent company news, and public sentiment for a specific company over the past week. You will be given a company's name your objective is to write a comprehensive long report detailing your analysis, insights, and implications for traders and investors on this company's current state after looking at social media and what people are saying about that company, analyzing sentiment data of what people feel each day about the company, and looking at recent company news. "
-                + " Call `get_industry_peers(ticker, curr_date)` **first** with the focal ticker and **curr_date = current analysis date**; peers come from **DeepSeek** (dedicated prompt) plus `stock_basic` code check — **not** a Tushare same-industry pool sort. Pick **at most 1–2** peer tickers for supplementary `get_news` only (互动易/短讯舆论角度；**不要**对多家竞品重复调用 `get_holder_number` / `get_stock_moneyflow` / `get_margin_detail`，以免工具爆炸). In prose, **never** claim peers were chosen by sampling Tushare industry constituents. Briefly relate peer tone vs focal when those pulls add something the News analyst may not emphasize."
+                + get_industry_peer_instruction()
+                + " Pick **at most 1–2** peer tickers for supplementary `get_news` only (互动易/短讯舆论角度；**不要**对多家竞品重复调用 `get_holder_number` / `get_stock_moneyflow` / `get_margin_detail`，以免工具爆炸). Briefly relate peer tone vs focal when those pulls add something the News analyst may not emphasize."
                 + " Use `get_news(ticker, start_date, end_date)` for company-focused corpus (**①②④⑤⑦**, including stock/industry research reports). You may also call `get_global_news(curr_date, look_back_days, limit)` for global macro context (**⑧ macro vector topic**) when it helps explain sentiment or narrative shifts. For ④⑤, read the merged Qdrant corpus directly (no LLM-screened high/medium labels). Try to look at all sources possible from social media to sentiment to news. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
-                + " **Quantitative A-share positioning (Tushare — required for this report):** (1) Call `get_holder_number` with the same `ticker` and an announcement-date window wide enough for several disclosed points (typically `start_date` ~18–24 months before the analysis date through `end_date` = analysis/trade date), then explain **股东户数** changes (concentration vs dispersion), including latest-point recency, average period-to-period fluctuation, and net directional move. "
+                + " **Quantitative A-share positioning (required for this report):** (1) Call `get_holder_number` with the same `ticker` and an announcement-date window wide enough for several disclosed points (typically `start_date` ~18–24 months before the analysis date through `end_date` = analysis/trade date), then explain **股东户数** changes (concentration vs dispersion), including latest-point recency, average period-to-period fluctuation, and net directional move. "
                 + "**Shareholder-count risk weighting (mandatory):** Use a combined rule, not a single-point judgment. If the **latest holder-count change is highly recent** (e.g. latest disclosure within ~2 months of analysis date) **and** either (a) average report-to-report fluctuation is large, or (b) the series changes strongly in one direction (especially sustained upward move / sizable cumulative increase), assign **high risk weight** and make it a **high-priority warning**. In A-share narratives, this often maps to **筹码分散** and, with prior strength or **高位/滞涨**, may be **consistent with 主力出货（distributing into retail）**. Conversely, if average fluctuation is small, or disclosures are stale / far from current date, do **not** over-weight holder-count risk by itself. Cross-check `get_stock_moneyflow` and `get_margin_detail` for context, and keep your final risk tier explicit in conclusions and in the closing table. "
                 + "(2) Call `get_stock_moneyflow` for recent trading days (e.g. last ~30–60 sessions ending on the analysis date) and interpret THS资金流字段: **net_amount** (当日净流入), **net_d5_amount** (5日主力净额), plus **buy_lg_amount / buy_md_amount / buy_sm_amount** and their占比（`*_rate`）to judge whether flows are strengthening or fading. "
                 + "(3) Call `get_margin_detail` over the same recent trading window and describe **融资融券** trends: 融资余额 `rzye`, 融资买入 `rzmre`, 融资偿还 `rzche`, etc. "
-                + " **Doc alignment (mandatory):** Before interpreting holder/moneyflow/margin/news fields, fetch corresponding official Tushare docs via `fetch_url`, and align each key field's meaning and unit with documentation. Do not infer field semantics from naming alone."
-                + " Add a short section **「字段释义与单位对齐（文档核对）」** with columns: `接口 | 字段 | 文档释义 | 单位/口径 | 本文用法` for key fields cited in conclusions."
+                + get_internal_doc_alignment_rule()
+                + get_report_branding_rules()
                 + "Include a dedicated markdown section summarizing these three pillars before your closing table."
-                + " **Citation block (mandatory):** Add a dedicated section named `## 引用来源` at the end. Include every material source you actually used from news/research reports/上证e互动/深交所互动易（深圳e互动） as a Markdown table with columns: `来源类别 | 日期 | 标题 | 证券/主题 | URL或渠道`. In `来源类别`, explicitly label one of: `新闻` / `研报` / `上证e互动` / `深交所互动易`. Do not fabricate links; if no URL is available, write `Tushare-<接口名>` as the channel."
+                + " **Citation block (mandatory):** Add a dedicated section named `## 引用来源` at the end. Include every material source you actually used from news/research reports/上证e互动/深交所互动易（深圳e互动） as a Markdown table with columns: `来源类别 | 日期 | 标题 | 证券/主题 | URL或渠道`. In `来源类别`, explicitly label one of: `新闻` / `研报` / `上证e互动` / `深交所互动易`. Do not fabricate links; if no URL is available, write `数据渠道-<简称>` as the channel."
                 + ticker_guard
                 + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
                 + get_web_fetch_tool_hint()
@@ -87,7 +92,7 @@ def create_social_media_analyst(llm):
             report = ""
 
             if len(result.tool_calls) == 0:
-                report = result.content
+                report = prepare_report_for_publish(result.content)
 
             return {
                 "messages": [result],

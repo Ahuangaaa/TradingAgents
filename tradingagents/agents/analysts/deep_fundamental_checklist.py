@@ -23,6 +23,8 @@ def create_deep_fundamental_checklist(llm):
 
             bundle = "\n\n".join(
                 [
+                    _section("Broad market / index flows", state.get("broad_market_report", "")),
+                    _section("Capital flow / sector rotation", state.get("capital_flow_report", "")),
                     _section("Market / technical context", state.get("market_report", "")),
                     _section("Social sentiment", state.get("sentiment_report", "")),
                     _section("News", state.get("news_report", "")),
